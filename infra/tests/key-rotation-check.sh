@@ -6,11 +6,12 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 
 ROOT_DIR="$TMP_ROOT/users"
 OPENCLAW_DEFAULT_OPENAI_KEY="default-test-key" ROOT_DIR="$ROOT_DIR" bash infra/scripts/provision-users.sh infra/users.csv
-OPENCLAW_DEFAULT_OPENAI_KEY="default-test-key" ROOT_DIR="$ROOT_DIR" bash infra/scripts/provision-user-secrets.sh infra/users.csv
+OPENCLAW_DEFAULT_OPENAI_KEY="default-test-key" OPENCLAW_DEFAULT_OPENAI_ENDPOINT="https://openai.example.internal/v1" ROOT_DIR="$ROOT_DIR" bash infra/scripts/provision-user-secrets.sh infra/users.csv
 
 bash infra/scripts/rotate-user-openai-key.sh u1001 new-key-1001 "$ROOT_DIR"
 [[ "$(cat "$ROOT_DIR/u1001/secrets/openai_api_key")" == "new-key-1001" ]] || { echo "FAIL: u1001 key not rotated"; exit 1; }
 [[ "$(cat "$ROOT_DIR/u1002/secrets/openai_api_key")" == "default-test-key" ]] || { echo "FAIL: u1002 key should remain default"; exit 1; }
+[[ "$(cat "$ROOT_DIR/u1002/secrets/openai_endpoint")" == "https://openai.example.internal/v1" ]] || { echo "FAIL: endpoint should remain configured" ; exit 1; }
 
 set +e
 OPENCLAW_DEFAULT_OPENAI_KEY="default-test-key" ROOT_DIR="$ROOT_DIR" bash infra/scripts/audit-default-keys.sh
