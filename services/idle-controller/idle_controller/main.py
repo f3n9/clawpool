@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import time
+from datetime import datetime, timezone
 
 
 class UnixSocketHTTPConnection(http.client.HTTPConnection):
@@ -39,6 +40,9 @@ class DockerClient:
     def list_containers(self):
         return self._request("GET", "/containers/json") or []
 
+    def inspect_container(self, container_id):
+        return self._request("GET", f"/containers/{container_id}/json") or {}
+
     def stop_container(self, container_id):
         self._request("POST", f"/containers/{container_id}/stop")
 
@@ -61,11 +65,51 @@ def collect_managed_containers(docker):
     return result
 
 
-def stop_idle_containers(docker, idle_minutes, now_ts=None):
+def _parse_iso8601_to_ts(value):
+    if not value:
+        return 0
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return int(datetime.fromisoformat(text).timestamp())
+    except ValueError:
+        return 0
+
+
+def _read_last_active_marker(users_root, identity):
+    if not users_root or not identity:
+        return 0
+    marker_path = os.path.join(users_root, identity, "runtime", "last_active_ts")
+    try:
+        with open(marker_path, "r", encoding="utf-8") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def resolve_last_active_ts(docker, container, users_root):
+    labels = container.get("Labels", {})
+    values = []
+    try:
+        values.append(int(labels.get("openclaw.last_active_ts", "0")))
+    except ValueError:
+        values.append(0)
+    values.append(_read_last_active_marker(users_root, labels.get("openclaw.identity", "")))
+    try:
+        details = docker.inspect_container(container["Id"])
+    except Exception:
+        details = {}
+    started_at = details.get("State", {}).get("StartedAt", "")
+    values.append(_parse_iso8601_to_ts(started_at))
+    return max(values)
+
+
+def stop_idle_containers(docker, idle_minutes, users_root, now_ts=None):
     stopped = []
     for c in collect_managed_containers(docker):
         labels = c.get("Labels", {})
-        last_active = int(labels.get("openclaw.last_active_ts", "0"))
+        last_active = resolve_last_active_ts(docker, c, users_root)
         active_sessions = int(labels.get("openclaw.active_sessions", "0"))
         if active_sessions > 0:
             continue
@@ -77,12 +121,13 @@ def stop_idle_containers(docker, idle_minutes, now_ts=None):
 
 def main():
     idle_minutes = int(os.getenv("OPENCLAW_IDLE_MINUTES", "30"))
+    users_root = os.getenv("OPENCLAW_USERS_ROOT", "/srv/openclaw/users")
     if not os.path.exists("/var/run/docker.sock"):
         print("idle-controller: docker socket missing, skip")
         return
 
     docker = DockerClient()
-    stopped = stop_idle_containers(docker, idle_minutes=idle_minutes)
+    stopped = stop_idle_containers(docker, idle_minutes=idle_minutes, users_root=users_root)
     print(f"idle-controller: stopped={len(stopped)}")
 
 

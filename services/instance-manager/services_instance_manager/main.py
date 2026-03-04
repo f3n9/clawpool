@@ -3,13 +3,14 @@ import json
 import http.client
 import os
 import re
+import select
 import shlex
 import socket
 import threading
 import time
 from datetime import datetime, timezone
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 
@@ -120,6 +121,8 @@ def resolve_container_name(employee_id, user_sub, mapping):
 def extract_identity(headers):
     employee_id = (
         headers.get("X-Employee-Id")
+        or headers.get("X-Auth-Request-Email")
+        or headers.get("X-Forwarded-Email")
         or headers.get("X-Auth-Request-User")
         or headers.get("X-Forwarded-User")
     )
@@ -162,6 +165,12 @@ def split_csv_values(text):
     if not text:
         return []
     return [v.strip() for v in text.split(",") if v.strip()]
+
+
+def is_websocket_upgrade(headers):
+    upgrade = (headers.get("Upgrade") or "").strip().lower()
+    connection = (headers.get("Connection") or "").strip().lower()
+    return upgrade == "websocket" and "upgrade" in connection
 
 
 def extract_groups(headers):
@@ -218,23 +227,123 @@ def _read_secret_file(path):
         return f.read().strip()
 
 
-def ensure_user_artifacts(identity, users_root, default_key, default_endpoint, default_model):
+def _write_last_active_marker(identity, users_root):
+    marker_dir = os.path.join(users_root, normalize_identity(identity), "runtime")
+    os.makedirs(marker_dir, exist_ok=True)
+    marker_path = os.path.join(marker_dir, "last_active_ts")
+    with open(marker_path, "w", encoding="utf-8") as f:
+        f.write(f"{int(time.time())}\n")
+    os.chmod(marker_path, 0o600)
+    container_uid = int(os.getenv("OPENCLAW_CONTAINER_UID", "1000"))
+    container_gid = int(os.getenv("OPENCLAW_CONTAINER_GID", "1000"))
+    _safe_chown(marker_path, container_uid, container_gid)
+
+
+def _ensure_runtime_config(runtime_dir, uid, gid):
+    config_path = os.path.join(runtime_dir, "openclaw.json")
+    cfg = {}
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            cfg = {}
+
+    if not isinstance(cfg, dict):
+        cfg = {}
+    gateway = cfg.get("gateway")
+    if not isinstance(gateway, dict):
+        gateway = {}
+        cfg["gateway"] = gateway
+
+    bind_mode = os.getenv("OPENCLAW_GATEWAY_BIND", "lan").strip() or "lan"
+    gateway.setdefault("bind", bind_mode)
+
+    try:
+        gateway.setdefault("port", int(os.getenv("OPENCLAW_INSTANCE_PORT", "18789")))
+    except ValueError:
+        gateway.setdefault("port", 3000)
+
+    control_ui = gateway.get("controlUi")
+    if not isinstance(control_ui, dict):
+        control_ui = {}
+        gateway["controlUi"] = control_ui
+    allowed_origins = control_ui.get("allowedOrigins")
+    if not isinstance(allowed_origins, list) or not allowed_origins:
+        explicit_origin = os.getenv("OPENCLAW_CONTROL_UI_ORIGIN", "").strip()
+        host = os.getenv("OPENCLAW_HOST", "").strip()
+        origin = explicit_origin or (f"https://{host}" if host else "")
+        if origin:
+            control_ui["allowedOrigins"] = [origin]
+
+    auth = gateway.get("auth")
+    if not isinstance(auth, dict):
+        auth = {}
+        gateway["auth"] = auth
+    auth_mode = os.getenv("OPENCLAW_GATEWAY_AUTH_MODE", "trusted-proxy").strip() or "trusted-proxy"
+    auth.setdefault("mode", auth_mode)
+    token = os.getenv("OPENCLAW_GATEWAY_AUTH_TOKEN", "").strip()
+    if token and not auth.get("token"):
+        auth["token"] = token
+
+    if auth.get("mode") == "trusted-proxy":
+        trusted_proxy = auth.get("trustedProxy")
+        if not isinstance(trusted_proxy, dict):
+            trusted_proxy = {}
+        # Remove keys that were used in prior failed experiments and are rejected by OpenClaw schema.
+        trusted_proxy.pop("emailHeader", None)
+        trusted_proxy.pop("cidrs", None)
+        user_header = trusted_proxy.get("userHeader")
+        if not isinstance(user_header, str) or not user_header.strip():
+            trusted_proxy["userHeader"] = (
+                os.getenv("OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER", "x-forwarded-user").strip()
+                or "x-forwarded-user"
+            )
+        auth["trustedProxy"] = trusted_proxy
+
+        trusted_proxies = gateway.get("trustedProxies")
+        if not isinstance(trusted_proxies, list) or not trusted_proxies:
+            gateway["trustedProxies"] = split_csv_values(
+                os.getenv("OPENCLAW_GATEWAY_TRUSTED_PROXIES", "127.0.0.1/32,172.16.0.0/12")
+            )
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=True, indent=2)
+        f.write("\n")
+    os.chmod(config_path, 0o600)
+    _safe_chown(config_path, uid, gid)
+
+
+def ensure_user_runtime(identity, users_root):
     base = os.path.join(users_root, identity)
     data_dir = os.path.join(base, "data")
     config_dir = os.path.join(base, "config")
     runtime_dir = os.path.join(base, "runtime")
-    secrets_dir = os.path.join(base, "secrets")
     container_uid = int(os.getenv("OPENCLAW_CONTAINER_UID", "1000"))
     container_gid = int(os.getenv("OPENCLAW_CONTAINER_GID", "1000"))
     _safe_mkdir(base, 0o700)
     _safe_mkdir(data_dir, 0o700)
     _safe_mkdir(config_dir, 0o700)
     _safe_mkdir(runtime_dir, 0o700)
-    _safe_mkdir(secrets_dir, 0o700)
     _safe_chown(base, container_uid, container_gid)
     _safe_chown(data_dir, container_uid, container_gid)
     _safe_chown(config_dir, container_uid, container_gid)
     _safe_chown(runtime_dir, container_uid, container_gid)
+    _ensure_runtime_config(runtime_dir, container_uid, container_gid)
+    return {
+        "data_dir": data_dir,
+        "config_dir": config_dir,
+        "runtime_dir": runtime_dir,
+    }
+
+
+def ensure_user_artifacts(identity, users_root, default_key, default_endpoint, default_model):
+    runtime = ensure_user_runtime(identity, users_root)
+    base = os.path.join(users_root, identity)
+    secrets_dir = os.path.join(base, "secrets")
+    container_uid = int(os.getenv("OPENCLAW_CONTAINER_UID", "1000"))
+    container_gid = int(os.getenv("OPENCLAW_CONTAINER_GID", "1000"))
+    _safe_mkdir(secrets_dir, 0o700)
     _safe_chown(secrets_dir, container_uid, container_gid)
 
     if not default_key:
@@ -262,9 +371,7 @@ def ensure_user_artifacts(identity, users_root, default_key, default_endpoint, d
         container_gid,
     )
     return {
-        "data_dir": data_dir,
-        "config_dir": config_dir,
-        "runtime_dir": runtime_dir,
+        **runtime,
         "secrets_dir": secrets_dir,
         "api_key_file": os.path.join(secrets_dir, "openai_api_key"),
         "endpoint_file": os.path.join(secrets_dir, "openai_endpoint"),
@@ -279,7 +386,7 @@ def _build_container_spec(container, identity, artifacts):
     image_tag = os.getenv("OPENCLAW_IMAGE_TAG", "latest").strip()
     full_image = image if ":" in image else f"{image}:{image_tag}"
     network = os.getenv("OPENCLAW_DOCKER_NETWORK", "infra_default")
-    upstream_port = int(os.getenv("OPENCLAW_INSTANCE_PORT", "3000"))
+    upstream_port = int(os.getenv("OPENCLAW_INSTANCE_PORT", "18789"))
     data_path = os.getenv("OPENCLAW_CONTAINER_DATA_PATH", "/app/data")
     config_path = os.getenv("OPENCLAW_CONTAINER_CONFIG_PATH", "/app/config")
     runtime_path = os.getenv("OPENCLAW_CONTAINER_RUNTIME_PATH", "/home/node/.openclaw")
@@ -322,6 +429,10 @@ def _build_container_spec(container, identity, artifacts):
 
 
 def ensure_container_exists(docker, identity, container):
+    ensure_user_runtime(
+        identity=normalize_identity(identity),
+        users_root=os.getenv("OPENCLAW_USERS_ROOT", "/srv/openclaw/users"),
+    )
     try:
         docker.inspect(container)
         return "existing"
@@ -469,6 +580,26 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             THROTTLE.release()
 
+        try:
+            _write_last_active_marker(
+                identity=identity,
+                users_root=os.getenv("OPENCLAW_USERS_ROOT", "/srv/openclaw/users"),
+            )
+        except Exception as exc:
+            print(
+                json.dumps(
+                    {
+                        "ts": datetime.now(timezone.utc).isoformat(),
+                        "event": "last_active_update_error",
+                        "container": container,
+                        "normalized_identity": identity,
+                        "error": str(exc),
+                    },
+                    ensure_ascii=True,
+                ),
+                flush=True,
+            )
+
         lifecycle = classify_instance_lifecycle(provision_state, startup_state)
         runtime = read_container_runtime_state(DOCKER, container)
         emit_identity_audit(
@@ -486,8 +617,76 @@ class Handler(BaseHTTPRequestHandler):
 
         return container
 
+    def _proxy_websocket(self, container):
+        upstream_port = int(os.getenv("OPENCLAW_INSTANCE_PORT", "18789"))
+        upstream = socket.create_connection((container, upstream_port), timeout=30)
+        client = self.connection
+
+        try:
+            request_lines = [f"{self.command} {self.path} HTTP/1.1"]
+            has_host = False
+            for key, value in self.headers.items():
+                if key.lower() == "host":
+                    has_host = True
+                    request_lines.append(f"Host: {container}:{upstream_port}")
+                else:
+                    request_lines.append(f"{key}: {value}")
+            if not has_host:
+                request_lines.append(f"Host: {container}:{upstream_port}")
+            raw_request = ("\r\n".join(request_lines) + "\r\n\r\n").encode("utf-8")
+            upstream.sendall(raw_request)
+
+            response = b""
+            while b"\r\n\r\n" not in response:
+                chunk = upstream.recv(4096)
+                if not chunk:
+                    raise ConnectionError("upstream closed before websocket headers")
+                response += chunk
+                if len(response) > 65536:
+                    raise ConnectionError("upstream websocket headers too large")
+
+            head, tail = response.split(b"\r\n\r\n", 1)
+            client.sendall(head + b"\r\n\r\n")
+            if tail:
+                client.sendall(tail)
+
+            status_line = head.split(b"\r\n", 1)[0].decode("utf-8", errors="ignore")
+            status_code = 0
+            parts = status_line.split(" ")
+            if len(parts) >= 2 and parts[1].isdigit():
+                status_code = int(parts[1])
+            if status_code != 101:
+                return
+
+            client.setblocking(False)
+            upstream.setblocking(False)
+            sockets = [client, upstream]
+            while True:
+                readable, _, errored = select.select(sockets, [], sockets, 60)
+                if errored:
+                    return
+                if not readable:
+                    continue
+                for sock in readable:
+                    try:
+                        data = sock.recv(65536)
+                    except OSError:
+                        return
+                    if not data:
+                        return
+                    target = upstream if sock is client else client
+                    target.sendall(data)
+        finally:
+            try:
+                upstream.close()
+            except OSError:
+                pass
+
     def _proxy_request(self, container):
-        upstream_port = int(os.getenv("OPENCLAW_INSTANCE_PORT", "3000"))
+        upstream_port = int(os.getenv("OPENCLAW_INSTANCE_PORT", "18789"))
+        if is_websocket_upgrade(self.headers):
+            self._proxy_websocket(container)
+            return
         method = self.command
         body = None
         if method in ("POST", "PUT", "PATCH"):
@@ -579,5 +778,5 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))
-    server = HTTPServer(("0.0.0.0", port), Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     server.serve_forever()

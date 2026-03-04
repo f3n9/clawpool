@@ -21,6 +21,9 @@ This directory contains base deployment assets for enterprise OpenClaw.
 - `OPENCLAW_DOCKER_NETWORK`
 - `OPENCLAW_INSTANCE_PORT`
 - `OPENCLAW_CONTAINER_DATA_PATH`, `OPENCLAW_CONTAINER_CONFIG_PATH`, `OPENCLAW_CONTAINER_RUNTIME_PATH`
+- `OPENCLAW_GATEWAY_AUTH_MODE` (recommended: `trusted-proxy`)
+- `OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER` (recommended: `x-forwarded-user`)
+- `OPENCLAW_GATEWAY_TRUSTED_PROXIES` (recommended: `127.0.0.1/32,172.16.0.0/12`)
 - `OPENCLAW_DEFAULT_OPENAI_KEY`
 - `OPENCLAW_DEFAULT_OPENAI_ENDPOINT`
 - `OPENCLAW_ALLOWED_MODELS` (must include only approved models, e.g. `gpt-5.2,gpt-5.3-codex`)
@@ -30,3 +33,20 @@ This directory contains base deployment assets for enterprise OpenClaw.
 - `OPENCLAW_BASE_CPU`, `OPENCLAW_BASE_MEM`
 - `OPENCLAW_BOOST_CPU`, `OPENCLAW_BOOST_MEM`
 - `OPENCLAW_STARTUP_MAX_CONCURRENT`
+
+## Health Check
+
+After login or configuration changes, run:
+
+- `infra/tests/gateway-health-check.sh <user_email> [host]`
+
+Example:
+
+- `infra/tests/gateway-health-check.sh fyue@yinxiang.com claw.hatch.yinxiang.com`
+
+It validates:
+
+- infra services are running (`instance-manager`, `oauth2-proxy`)
+- per-user runtime config schema compatibility (`trusted-proxy` auth keys)
+- `/resolve` routes to the expected dedicated container
+- websocket upgrade returns `101 Switching Protocols`
