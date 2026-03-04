@@ -9,3 +9,6 @@
 - `bash infra/tests/auth-smoke.sh`
 - `bash infra/tests/routing-smoke.sh`
 - `bash infra/tests/isolation-check.sh`
+
+## Identity mapping pre-check
+- Validate Keycloak claim mapping per `docs/runbooks/keycloak-claims.md`.

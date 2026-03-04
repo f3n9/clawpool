@@ -16,6 +16,8 @@ http:
         authResponseHeaders:
           - X-Employee-Id
           - X-User-Sub
+          - X-Auth-Request-User
+          - X-Forwarded-User
 
   services:
     instance-manager:

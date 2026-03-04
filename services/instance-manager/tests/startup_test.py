@@ -8,7 +8,7 @@ class FakeDocker:
         self.states = states
         self.started = []
 
-    def inspect(self, name):
+    def inspect(self, name, wait=False):
         return {"running": self.states.get(name, False), "healthy": self.states.get(name, False)}
 
     def start(self, name):
