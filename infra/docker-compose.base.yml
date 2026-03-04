@@ -1,0 +1,49 @@
+services:
+  traefik:
+    image: traefik:v3.1
+    command:
+      - --api.dashboard=true
+      - --providers.file.directory=/etc/traefik/dynamic
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:80
+    ports:
+      - "80:80"
+    volumes:
+      - ./traefik:/etc/traefik/dynamic:ro
+    restart: unless-stopped
+
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    command:
+      - --config=/etc/oauth2-proxy/oauth2-proxy.cfg
+    environment:
+      OAUTH2_PROXY_OIDC_ISSUER_URL: ${KEYCLOAK_ISSUER_URL}
+      OAUTH2_PROXY_CLIENT_ID: ${KEYCLOAK_CLIENT_ID}
+      OAUTH2_PROXY_CLIENT_SECRET: ${KEYCLOAK_CLIENT_SECRET}
+    volumes:
+      - ./oauth2-proxy.cfg:/etc/oauth2-proxy/oauth2-proxy.cfg:ro
+    restart: unless-stopped
+
+  instance-manager:
+    build:
+      context: ../services/instance-manager
+    environment:
+      OPENCLAW_IDLE_MINUTES: ${OPENCLAW_IDLE_MINUTES}
+      OPENCLAW_STARTUP_MAX_CONCURRENT: ${OPENCLAW_STARTUP_MAX_CONCURRENT}
+      OPENCLAW_BASE_CPU: ${OPENCLAW_BASE_CPU}
+      OPENCLAW_BASE_MEM: ${OPENCLAW_BASE_MEM}
+      OPENCLAW_BOOST_CPU: ${OPENCLAW_BOOST_CPU}
+      OPENCLAW_BOOST_MEM: ${OPENCLAW_BOOST_MEM}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /srv/openclaw/users:/srv/openclaw/users
+    restart: unless-stopped
+
+  idle-controller:
+    build:
+      context: ../services/idle-controller
+    environment:
+      OPENCLAW_IDLE_MINUTES: ${OPENCLAW_IDLE_MINUTES}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped

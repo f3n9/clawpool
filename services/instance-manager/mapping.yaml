@@ -1,0 +1,3 @@
+# Optional overrides for identity -> container mapping
+# Default mapping rule remains: openclaw-<identity>
+mappings: {}
