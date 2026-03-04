@@ -2,6 +2,8 @@
 
 ## Initial State
 - New users are provisioned with default key only for bootstrap.
+- New users are also provisioned with default endpoint and default model.
+- Model policy is controlled by `OPENCLAW_ALLOWED_MODELS` and `OPENCLAW_DEFAULT_OPENAI_MODEL`.
 
 ## Rotate One User Key
 - Run: `bash infra/scripts/rotate-user-openai-key.sh <employee_id> <new_key>`

@@ -1,26 +1,13 @@
 http:
   routers:
     openclaw:
-      rule: "Host(`${OPENCLAW_HOST}`)"
+      rule: "Host(`claw.hatch.yinxiang.com`) && PathPrefix(`/`)"
       entryPoints:
         - web
-      service: instance-manager
-      middlewares:
-        - oauth-forward-auth
-
-  middlewares:
-    oauth-forward-auth:
-      forwardAuth:
-        address: "http://oauth2-proxy:4180/oauth2/auth"
-        trustForwardHeader: true
-        authResponseHeaders:
-          - X-Employee-Id
-          - X-User-Sub
-          - X-Auth-Request-User
-          - X-Forwarded-User
+      service: oauth2-proxy
 
   services:
-    instance-manager:
+    oauth2-proxy:
       loadBalancer:
         servers:
-          - url: "http://instance-manager:8080"
+          - url: "http://oauth2-proxy:4180"

@@ -1,5 +1,7 @@
 __pycache__/
 *.py[cod]
 .env
+infra/.env.ready
+infra/.env.1
 .worktrees/
 worktrees/

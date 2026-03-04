@@ -10,8 +10,8 @@ mkdir -p "$ROOT_DIR"
 tail -n +2 "$CSV_FILE" | while IFS=, read -r employee_id; do
   [[ -n "${employee_id}" ]] || continue
   base="$ROOT_DIR/$employee_id"
-  mkdir -p "$base/data" "$base/config" "$base/secrets"
-  chmod 700 "$base" "$base/data" "$base/config" "$base/secrets"
+  mkdir -p "$base/data" "$base/config" "$base/runtime" "$base/secrets"
+  chmod 700 "$base" "$base/data" "$base/config" "$base/runtime" "$base/secrets"
 done
 
 echo "Provisioned user directories under $ROOT_DIR"

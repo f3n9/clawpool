@@ -16,6 +16,19 @@ class FakeDocker:
         self.states[name] = True
 
 
+class FakeDockerNoHealth:
+    def __init__(self, states):
+        self.states = states
+        self.started = []
+
+    def inspect(self, name, wait=False):
+        return {"State": {"Running": self.states.get(name, False)}}
+
+    def start(self, name):
+        self.started.append(name)
+        self.states[name] = True
+
+
 class StartupTests(unittest.TestCase):
     def test_starts_container_when_stopped(self):
         docker = FakeDocker({"openclaw-u1": False})
@@ -33,6 +46,11 @@ class StartupTests(unittest.TestCase):
         self.assertFalse(throttle.try_acquire())
         throttle.release()
         self.assertTrue(throttle.try_acquire())
+
+    def test_running_without_healthcheck_is_treated_as_ready(self):
+        docker = FakeDockerNoHealth({"openclaw-u1": True})
+        start_container_if_needed(docker, "openclaw-u1")
+        self.assertEqual(docker.started, [])
 
 
 if __name__ == "__main__":

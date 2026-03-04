@@ -19,7 +19,11 @@
 ## Result Template
 - Date:
 - Environment:
+- OpenClaw image tag:
 - Observed cold start P95:
 - Auth success rate:
 - OOM observed (yes/no):
 - Isolation violations (yes/no):
+- Evidence files:
+  - k6 summary output:
+  - docker stats snapshot:

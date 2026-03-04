@@ -1,6 +1,10 @@
 import unittest
 
-from services_instance_manager.main import resolve_container_name
+from services_instance_manager.main import (
+    classify_instance_lifecycle,
+    normalize_identity,
+    resolve_container_name,
+)
 
 
 class MappingTests(unittest.TestCase):
@@ -20,6 +24,19 @@ class MappingTests(unittest.TestCase):
         mapping = {"u2002": "openclaw-special-u2002"}
         container = resolve_container_name(employee_id="u2002", user_sub="ignored", mapping=mapping)
         self.assertEqual(container, "openclaw-special-u2002")
+
+    def test_email_identity_is_normalized_for_container_name(self):
+        container = resolve_container_name(employee_id="fyue@yinxiang.com", user_sub=None, mapping={})
+        self.assertEqual(container, "openclaw-fyue-yinxiang.com")
+
+    def test_normalize_identity_rejects_invalid_symbols_only(self):
+        with self.assertRaises(ValueError):
+            normalize_identity("%%%%")
+
+    def test_lifecycle_classification(self):
+        self.assertEqual(classify_instance_lifecycle("created", "started"), "new")
+        self.assertEqual(classify_instance_lifecycle("existing", "running"), "running")
+        self.assertEqual(classify_instance_lifecycle("existing", "started"), "restart")
 
 
 if __name__ == "__main__":

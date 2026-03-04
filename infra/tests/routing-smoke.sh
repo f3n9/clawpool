@@ -4,9 +4,8 @@ set -euo pipefail
 FILE="infra/traefik/dynamic.yml"
 
 [[ -f "$FILE" ]] || { echo "FAIL: missing dynamic routing file"; exit 1; }
-grep -q "oauth-forward-auth" "$FILE" || { echo "FAIL: missing auth middleware"; exit 1; }
-grep -q "instance-manager" "$FILE" || { echo "FAIL: missing instance-manager upstream"; exit 1; }
-grep -q "X-Auth-Request-User" "$FILE" || { echo "FAIL: missing user identity header forwarding"; exit 1; }
-grep -q "X-Forwarded-User" "$FILE" || { echo "FAIL: missing fallback user header forwarding"; exit 1; }
+grep -q "http://oauth2-proxy:4180" "$FILE" || { echo "FAIL: missing oauth2-proxy upstream service"; exit 1; }
+grep -q 'Host(' "$FILE" || { echo "FAIL: missing host rule"; exit 1; }
+grep -q 'PathPrefix(`/`)' "$FILE" || { echo "FAIL: missing root path routing"; exit 1; }
 
 echo "PASS: dynamic routing baseline is configured"

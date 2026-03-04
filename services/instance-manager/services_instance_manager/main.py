@@ -3,9 +3,11 @@ import json
 import http.client
 import os
 import re
+import shlex
 import socket
 import threading
 import time
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -27,6 +29,14 @@ class StartupThrottle:
     def release(self):
         with self._lock:
             self._active = max(0, self._active - 1)
+
+
+class DockerAPIError(RuntimeError):
+    def __init__(self, status, reason, path):
+        super().__init__(f"docker api error: {status} {reason} path={path}")
+        self.status = status
+        self.reason = reason
+        self.path = path
 
 
 class UnixSocketHTTPConnection(http.client.HTTPConnection):
@@ -54,7 +64,7 @@ class UnixSocketTransport:
         resp = conn.getresponse()
         raw = resp.read()
         if resp.status >= 400:
-            raise RuntimeError(f"docker api error: {resp.status} {resp.reason} path={path}")
+            raise DockerAPIError(resp.status, resp.reason, path)
         if not raw:
             return None
         return json.loads(raw.decode("utf-8"))
@@ -71,6 +81,9 @@ class DockerAPIClient:
     def start(self, name):
         return self.transport.request("POST", f"/containers/{name}/start")
 
+    def create(self, name, body):
+        return self.transport.request("POST", f"/containers/create?name={name}", body=body)
+
 
 class DockerClient:
     """In-memory fallback for tests and environments without Docker socket."""
@@ -82,14 +95,23 @@ class DockerClient:
         self._state[name] = True
 
     def inspect(self, name, wait=False):
+        if name not in self._state:
+            raise DockerAPIError(404, "Not Found", f"/containers/{name}/json")
         running = self._state.get(name, False)
         return {"State": {"Running": running, "Health": {"Status": "healthy" if running else "starting"}}}
 
+    def create(self, name, body):
+        self._state[name] = False
+        return {"Id": name}
+
 
 def resolve_container_name(employee_id, user_sub, mapping):
-    identity = employee_id or user_sub
-    if not identity:
+    raw_identity = employee_id or user_sub
+    if not raw_identity:
         raise ValueError("missing identity")
+    identity = normalize_identity(raw_identity)
+    if raw_identity in mapping:
+        return mapping[raw_identity]
     if identity in mapping:
         return mapping[identity]
     return f"openclaw-{identity}"
@@ -105,16 +127,257 @@ def extract_identity(headers):
     return employee_id, user_sub
 
 
+def normalize_identity(identity):
+    raw = (identity or "").strip().lower()
+    if not raw:
+        raise ValueError("missing identity")
+    safe = re.sub(r"[^a-z0-9._-]+", "-", raw)
+    safe = re.sub(r"-{2,}", "-", safe).strip("-.")
+    if not safe:
+        raise ValueError("invalid identity")
+    # Keep deterministic names while avoiding extreme-length container names.
+    return safe[:96]
+
+
+def classify_instance_lifecycle(provision_state, startup_state):
+    if provision_state == "created":
+        return "new"
+    if startup_state == "running":
+        return "running"
+    if startup_state == "started":
+        return "restart"
+    return "unknown"
+
+
+def emit_identity_audit(event, **fields):
+    payload = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        **fields,
+    }
+    print(json.dumps(payload, ensure_ascii=True), flush=True)
+
+
+def split_csv_values(text):
+    if not text:
+        return []
+    return [v.strip() for v in text.split(",") if v.strip()]
+
+
+def extract_groups(headers):
+    raw = headers.get("X-Forwarded-Groups") or headers.get("X-Auth-Request-Groups") or ""
+    if not raw:
+        return []
+    # oauth2-proxy/IdP may separate groups by comma, semicolon, or whitespace.
+    return [v for v in re.split(r"[,\s;]+", raw) if v]
+
+
+def is_identity_allowed(headers, allowed_email_domains, allowed_groups):
+    if not allowed_email_domains and not allowed_groups:
+        return True
+
+    email = (headers.get("X-Forwarded-Email") or headers.get("X-Auth-Request-Email") or "").strip()
+    groups = set(extract_groups(headers))
+
+    email_ok = True
+    if allowed_email_domains:
+        email_ok = False
+        if email and "@" in email:
+            domain = email.rsplit("@", 1)[1].lower()
+            email_ok = domain in {d.lower() for d in allowed_email_domains}
+
+    group_ok = True
+    if allowed_groups:
+        group_ok = any(g in groups for g in allowed_groups)
+
+    return email_ok and group_ok
+
+
+def _safe_mkdir(path, mode):
+    os.makedirs(path, exist_ok=True)
+    os.chmod(path, mode)
+
+
+def _safe_chown(path, uid, gid):
+    os.chown(path, int(uid), int(gid))
+
+
+def _write_if_missing(path, value, mode, uid, gid):
+    if os.path.exists(path):
+        os.chmod(path, mode)
+        _safe_chown(path, uid, gid)
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f"{value}\n")
+    os.chmod(path, mode)
+    _safe_chown(path, uid, gid)
+
+
+def _read_secret_file(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read().strip()
+
+
+def ensure_user_artifacts(identity, users_root, default_key, default_endpoint, default_model):
+    base = os.path.join(users_root, identity)
+    data_dir = os.path.join(base, "data")
+    config_dir = os.path.join(base, "config")
+    runtime_dir = os.path.join(base, "runtime")
+    secrets_dir = os.path.join(base, "secrets")
+    container_uid = int(os.getenv("OPENCLAW_CONTAINER_UID", "1000"))
+    container_gid = int(os.getenv("OPENCLAW_CONTAINER_GID", "1000"))
+    _safe_mkdir(base, 0o700)
+    _safe_mkdir(data_dir, 0o700)
+    _safe_mkdir(config_dir, 0o700)
+    _safe_mkdir(runtime_dir, 0o700)
+    _safe_mkdir(secrets_dir, 0o700)
+    _safe_chown(base, container_uid, container_gid)
+    _safe_chown(data_dir, container_uid, container_gid)
+    _safe_chown(config_dir, container_uid, container_gid)
+    _safe_chown(runtime_dir, container_uid, container_gid)
+    _safe_chown(secrets_dir, container_uid, container_gid)
+
+    if not default_key:
+        raise RuntimeError("OPENCLAW_DEFAULT_OPENAI_KEY is required for JIT provisioning")
+
+    _write_if_missing(
+        os.path.join(secrets_dir, "openai_api_key"),
+        default_key,
+        0o600,
+        container_uid,
+        container_gid,
+    )
+    _write_if_missing(
+        os.path.join(secrets_dir, "openai_endpoint"),
+        default_endpoint,
+        0o600,
+        container_uid,
+        container_gid,
+    )
+    _write_if_missing(
+        os.path.join(secrets_dir, "openai_model"),
+        default_model,
+        0o600,
+        container_uid,
+        container_gid,
+    )
+    return {
+        "data_dir": data_dir,
+        "config_dir": config_dir,
+        "runtime_dir": runtime_dir,
+        "secrets_dir": secrets_dir,
+        "api_key_file": os.path.join(secrets_dir, "openai_api_key"),
+        "endpoint_file": os.path.join(secrets_dir, "openai_endpoint"),
+        "model_file": os.path.join(secrets_dir, "openai_model"),
+    }
+
+
+def _build_container_spec(container, identity, artifacts):
+    image = os.getenv("OPENCLAW_IMAGE", "").strip()
+    if not image:
+        raise RuntimeError("OPENCLAW_IMAGE is required for JIT provisioning")
+    image_tag = os.getenv("OPENCLAW_IMAGE_TAG", "latest").strip()
+    full_image = image if ":" in image else f"{image}:{image_tag}"
+    network = os.getenv("OPENCLAW_DOCKER_NETWORK", "infra_default")
+    upstream_port = int(os.getenv("OPENCLAW_INSTANCE_PORT", "3000"))
+    data_path = os.getenv("OPENCLAW_CONTAINER_DATA_PATH", "/app/data")
+    config_path = os.getenv("OPENCLAW_CONTAINER_CONFIG_PATH", "/app/config")
+    runtime_path = os.getenv("OPENCLAW_CONTAINER_RUNTIME_PATH", "/home/node/.openclaw")
+    cmd_value = os.getenv("OPENCLAW_STARTUP_CMD", "").strip()
+
+    api_key = _read_secret_file(artifacts["api_key_file"])
+    endpoint = _read_secret_file(artifacts["endpoint_file"])
+    model = _read_secret_file(artifacts["model_file"])
+
+    env = [
+        f"OPENAI_API_KEY={api_key}",
+        f"OPENAI_BASE_URL={endpoint}",
+        f"OPENAI_MODEL={model}",
+        f"OPENCLAW_OPENAI_ENDPOINT={endpoint}",
+        f"OPENCLAW_OPENAI_MODEL={model}",
+    ]
+    spec = {
+        "Image": full_image,
+        "Env": env,
+        "Labels": {
+            "openclaw.managed": "true",
+            "openclaw.identity": identity,
+            "openclaw.last_active_ts": str(int(time.time())),
+            "openclaw.active_sessions": "0",
+        },
+        "ExposedPorts": {f"{upstream_port}/tcp": {}},
+        "HostConfig": {
+            "Binds": [
+                f'{artifacts["data_dir"]}:{data_path}',
+                f'{artifacts["config_dir"]}:{config_path}',
+                f'{artifacts["runtime_dir"]}:{runtime_path}',
+            ],
+            "NetworkMode": network,
+            "RestartPolicy": {"Name": "unless-stopped"},
+        },
+    }
+    if cmd_value:
+        spec["Cmd"] = shlex.split(cmd_value)
+    return spec
+
+
+def ensure_container_exists(docker, identity, container):
+    try:
+        docker.inspect(container)
+        return "existing"
+    except DockerAPIError as exc:
+        if exc.status != 404:
+            raise
+
+    artifacts = ensure_user_artifacts(
+        identity=normalize_identity(identity),
+        users_root=os.getenv("OPENCLAW_USERS_ROOT", "/srv/openclaw/users"),
+        default_key=os.getenv("OPENCLAW_DEFAULT_OPENAI_KEY", "").strip(),
+        default_endpoint=os.getenv("OPENCLAW_DEFAULT_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
+        default_model=os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", "gpt-5.2"),
+    )
+    spec = _build_container_spec(container=container, identity=identity, artifacts=artifacts)
+    try:
+        docker.create(container, spec)
+    except DockerAPIError as exc:
+        if exc.status != 409:
+            raise
+    return "created"
+
+
+def read_container_runtime_state(docker, container):
+    try:
+        info = docker.inspect(container)
+    except Exception:
+        return {"running": None, "health": None}
+    running = info.get("running")
+    if running is None:
+        running = info.get("State", {}).get("Running")
+    health = info.get("healthy")
+    if health is None:
+        health_obj = info.get("State", {}).get("Health")
+        health = health_obj.get("Status") if health_obj else None
+    return {"running": running, "health": health}
+
+
 def start_container_if_needed(docker, container, health_timeout_seconds=15):
+    running_ready_seconds = int(os.getenv("OPENCLAW_RUNNING_READY_SECONDS", "20"))
     state = docker.inspect(container)
     running = state.get("running")
     healthy = state.get("healthy")
+    health_status = None
     if running is None:
         running = state.get("State", {}).get("Running", False)
     if healthy is None:
-        healthy = state.get("State", {}).get("Health", {}).get("Status") == "healthy"
+        health_obj = state.get("State", {}).get("Health")
+        if health_obj is None:
+            # Treat running containers without explicit healthchecks as ready.
+            healthy = bool(running)
+        else:
+            health_status = health_obj.get("Status")
+            healthy = health_status == "healthy"
 
-    if running and healthy:
+    if running and (healthy or health_status in {None, "starting"}):
         return "running"
 
     docker.start(container)
@@ -123,9 +386,21 @@ def start_container_if_needed(docker, container, health_timeout_seconds=15):
     while time.time() < deadline:
         post = docker.inspect(container, wait=True)
         post_healthy = post.get("healthy")
+        post_running = post.get("running")
+        if post_running is None:
+            post_running = post.get("State", {}).get("Running", False)
+        post_health_status = None
         if post_healthy is None:
-            post_healthy = post.get("State", {}).get("Health", {}).get("Status") == "healthy"
+            post_health = post.get("State", {}).get("Health")
+            if post_health is None:
+                post_healthy = bool(post_running)
+            else:
+                post_health_status = post_health.get("Status")
+                post_healthy = post_health_status == "healthy"
         if post_healthy:
+            return "started"
+        elapsed = health_timeout_seconds - (deadline - time.time())
+        if post_running and post_health_status in {"starting", None} and elapsed >= running_ready_seconds:
             return "started"
         time.sleep(0.25)
 
@@ -138,6 +413,17 @@ if os.path.exists("/var/run/docker.sock"):
 else:
     DOCKER = DockerClient()
 THROTTLE = StartupThrottle(max_concurrent=os.getenv("OPENCLAW_STARTUP_MAX_CONCURRENT", "4"))
+PROVISION_LOCKS = {}
+PROVISION_LOCKS_GUARD = threading.Lock()
+
+
+def _acquire_provision_lock(key):
+    with PROVISION_LOCKS_GUARD:
+        lock = PROVISION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            PROVISION_LOCKS[key] = lock
+    return lock
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -149,18 +435,54 @@ class Handler(BaseHTTPRequestHandler):
 
     def _resolve_target_container(self, query=None):
         query = query or {}
+        request_id = self.headers.get("X-Request-Id") or self.headers.get("X-Amzn-Trace-Id")
         header_identity, header_sub = extract_identity(self.headers)
         employee_id = query.get("employee_id", [None])[0] or header_identity
         user_sub = query.get("user_sub", [None])[0] or header_sub
+        raw_identity = employee_id or user_sub
+        identity = normalize_identity(raw_identity)
+        allowed_domains = split_csv_values(os.getenv("OPENCLAW_ALLOWED_EMAIL_DOMAINS", ""))
+        allowed_groups = split_csv_values(os.getenv("OPENCLAW_ALLOWED_GROUPS", ""))
+        if not is_identity_allowed(self.headers, allowed_domains, allowed_groups):
+            emit_identity_audit(
+                "identity_denied",
+                request_id=request_id,
+                raw_identity=raw_identity,
+                normalized_identity=identity,
+                reason="not_allowed",
+            )
+            raise PermissionError("identity not allowed")
+
         container = resolve_container_name(employee_id, user_sub, MAPPING)
+        provision_state = "existing"
+        if os.getenv("OPENCLAW_JIT_PROVISION", "true").lower() in {"1", "true", "yes"}:
+            lock = _acquire_provision_lock(container)
+            with lock:
+                provision_state = ensure_container_exists(DOCKER, identity=identity, container=container)
 
         if not THROTTLE.try_acquire():
             raise RuntimeError("startup throttled")
 
         try:
-            start_container_if_needed(DOCKER, container)
+            timeout = int(os.getenv("OPENCLAW_HEALTH_TIMEOUT_SECONDS", "120"))
+            startup_state = start_container_if_needed(DOCKER, container, health_timeout_seconds=timeout)
         finally:
             THROTTLE.release()
+
+        lifecycle = classify_instance_lifecycle(provision_state, startup_state)
+        runtime = read_container_runtime_state(DOCKER, container)
+        emit_identity_audit(
+            "identity_routed",
+            request_id=request_id,
+            raw_identity=raw_identity,
+            normalized_identity=identity,
+            container=container,
+            provision_state=provision_state,
+            startup_state=startup_state,
+            lifecycle=lifecycle,
+            container_running=runtime.get("running"),
+            container_health=runtime.get("health"),
+        )
 
         return container
 
@@ -206,8 +528,14 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 self._json(HTTPStatus.UNAUTHORIZED, {"error": "missing identity"})
                 return
+            except PermissionError:
+                self._json(HTTPStatus.FORBIDDEN, {"error": "identity not allowed"})
+                return
             except RuntimeError:
                 self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "startup throttled"})
+                return
+            except TimeoutError:
+                self._json(HTTPStatus.GATEWAY_TIMEOUT, {"error": "container startup timeout"})
                 return
             self._json(HTTPStatus.OK, {"container": container, "state": "ready"})
             return
@@ -217,8 +545,14 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._json(HTTPStatus.UNAUTHORIZED, {"error": "missing identity"})
             return
+        except PermissionError:
+            self._json(HTTPStatus.FORBIDDEN, {"error": "identity not allowed"})
+            return
         except RuntimeError:
             self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "startup throttled"})
+            return
+        except TimeoutError:
+            self._json(HTTPStatus.GATEWAY_TIMEOUT, {"error": "container startup timeout"})
             return
 
         if not re.match(r"^[a-zA-Z0-9._-]+$", container):
