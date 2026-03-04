@@ -47,3 +47,16 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
+
+  resource-controller:
+    build:
+      context: ../services/resource-controller
+    environment:
+      OPENCLAW_BOOST_THRESHOLD: 10
+      OPENCLAW_BASE_CPU: ${OPENCLAW_BASE_CPU}
+      OPENCLAW_BASE_MEM: ${OPENCLAW_BASE_MEM}
+      OPENCLAW_BOOST_CPU: ${OPENCLAW_BOOST_CPU}
+      OPENCLAW_BOOST_MEM: ${OPENCLAW_BOOST_MEM}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped

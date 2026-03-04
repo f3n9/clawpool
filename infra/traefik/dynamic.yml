@@ -1,0 +1,24 @@
+http:
+  routers:
+    openclaw:
+      rule: "Host(`${OPENCLAW_HOST}`)"
+      entryPoints:
+        - web
+      service: instance-manager
+      middlewares:
+        - oauth-forward-auth
+
+  middlewares:
+    oauth-forward-auth:
+      forwardAuth:
+        address: "http://oauth2-proxy:4180/oauth2/auth"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - X-Employee-Id
+          - X-User-Sub
+
+  services:
+    instance-manager:
+      loadBalancer:
+        servers:
+          - url: "http://instance-manager:8080"
