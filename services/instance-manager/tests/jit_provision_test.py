@@ -1,15 +1,20 @@
 import os
+import struct
 import tempfile
 import unittest
 from unittest.mock import patch
 import json
 
 from services_instance_manager.main import (
+    CONSOLE_STATIC_ROOT,
     DockerAPIError,
     _inject_trusted_proxy_user_header_if_needed,
     is_browser_navigation_request,
     is_retryable_upstream_error,
     normalize_next_path,
+    _websocket_accept_key,
+    _ws_read_frame,
+    _ws_send_frame,
     _write_last_active_marker,
     ensure_container_exists,
     extract_identity,
@@ -38,6 +43,10 @@ class FakeDocker:
 
 
 class JITProvisionTests(unittest.TestCase):
+    def test_console_static_assets_exist(self):
+        self.assertTrue((CONSOLE_STATIC_ROOT / "xterm.js").is_file())
+        self.assertTrue((CONSOLE_STATIC_ROOT / "xterm.css").is_file())
+
     def test_split_csv_values(self):
         self.assertEqual(split_csv_values("a,b, c"), ["a", "b", "c"])
 
@@ -56,6 +65,53 @@ class JITProvisionTests(unittest.TestCase):
         self.assertEqual(normalize_next_path("channels?x=1"), "/")
         self.assertEqual(normalize_next_path("/channels?x=1"), "/channels?x=1")
         self.assertEqual(normalize_next_path("/__openclaw__/bootstrap-status"), "/")
+
+    def test_websocket_accept_key(self):
+        self.assertEqual(
+            _websocket_accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=",
+        )
+
+    def test_ws_read_and_send_frame(self):
+        class DummySocket:
+            def __init__(self, incoming=b""):
+                self._incoming = bytearray(incoming)
+                self.sent = bytearray()
+
+            def recv(self, n):
+                if not self._incoming:
+                    return b""
+                chunk = self._incoming[:n]
+                del self._incoming[:n]
+                return bytes(chunk)
+
+            def sendall(self, data):
+                self.sent.extend(data)
+
+        # client -> server: masked text frame "hello"
+        payload = b"hello"
+        mask = b"\x01\x02\x03\x04"
+        masked = bytes(payload[i] ^ mask[i % 4] for i in range(len(payload)))
+        frame = bytes([0x81, 0x80 | len(payload)]) + mask + masked
+        in_sock = DummySocket(frame)
+        opcode, body = _ws_read_frame(in_sock)
+        self.assertEqual(opcode, 1)
+        self.assertEqual(body, payload)
+
+        # server -> client: binary frame "world"
+        out_sock = DummySocket()
+        _ws_send_frame(out_sock, b"world", opcode=2)
+        raw = bytes(out_sock.sent)
+        self.assertEqual(raw[0], 0x82)
+        length = raw[1] & 0x7F
+        idx = 2
+        if length == 126:
+            length = struct.unpack("!H", raw[idx : idx + 2])[0]
+            idx += 2
+        elif length == 127:
+            length = struct.unpack("!Q", raw[idx : idx + 8])[0]
+            idx += 8
+        self.assertEqual(raw[idx : idx + length], b"world")
 
     def test_normalize_identity_for_email(self):
         self.assertEqual(normalize_identity("fyue@yinxiang.com"), "fyue-yinxiang.com")

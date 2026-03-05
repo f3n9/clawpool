@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
+import base64
+import hashlib
 import json
 import http.client
 import os
+from pathlib import Path
 import re
 import secrets
 import select
 import shlex
 import socket
+import struct
 import threading
 import time
 from datetime import datetime, timezone
@@ -79,6 +83,43 @@ class UnixSocketTransport:
             return None
         return json.loads(raw.decode("utf-8"))
 
+    def stream(self, method, path, body=None):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(self.socket_path)
+        headers = {"Host": "localhost", "Connection": "keep-alive"}
+        payload = b""
+        if body is not None:
+            payload = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+            headers["Content-Length"] = str(len(payload))
+        else:
+            headers["Content-Length"] = "0"
+        lines = [f"{method} {path} HTTP/1.1"] + [f"{k}: {v}" for k, v in headers.items()]
+        req = ("\r\n".join(lines) + "\r\n\r\n").encode("utf-8") + payload
+        sock.sendall(req)
+
+        response = b""
+        while b"\r\n\r\n" not in response:
+            chunk = sock.recv(4096)
+            if not chunk:
+                sock.close()
+                raise RuntimeError("docker stream response closed before headers")
+            response += chunk
+            if len(response) > 65536:
+                sock.close()
+                raise RuntimeError("docker stream response headers too large")
+
+        head, tail = response.split(b"\r\n\r\n", 1)
+        lines = head.decode("iso-8859-1", errors="replace").split("\r\n")
+        status_line = lines[0] if lines else ""
+        parts = status_line.split(" ", 2)
+        status = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+        reason = parts[2] if len(parts) > 2 else ""
+        if status >= 400:
+            sock.close()
+            raise DockerAPIError(status, reason or "docker stream error", path)
+        return sock, tail
+
 
 class DockerAPIClient:
     def __init__(self, transport=None):
@@ -93,6 +134,21 @@ class DockerAPIClient:
 
     def create(self, name, body):
         return self.transport.request("POST", f"/containers/create?name={name}", body=body)
+
+    def create_exec(self, name, cmd, user="node", tty=True):
+        body = {
+            "AttachStdin": True,
+            "AttachStdout": True,
+            "AttachStderr": True,
+            "Tty": tty,
+            "Cmd": cmd,
+            "User": user,
+        }
+        return self.transport.request("POST", f"/containers/{name}/exec", body=body)
+
+    def start_exec_stream(self, exec_id, tty=True):
+        body = {"Detach": False, "Tty": tty}
+        return self.transport.stream("POST", f"/exec/{exec_id}/start", body=body)
 
     def exec_run(self, name, cmd, user="node", timeout_seconds=20):
         payload = {
@@ -141,6 +197,14 @@ class DockerClient:
         if name not in self._state:
             raise DockerAPIError(404, "Not Found", f"/containers/{name}/exec")
         return 0
+
+    def create_exec(self, name, cmd, user="node", tty=True):
+        if name not in self._state:
+            raise DockerAPIError(404, "Not Found", f"/containers/{name}/exec")
+        return {"Id": f"fake-{name}-exec"}
+
+    def start_exec_stream(self, exec_id, tty=True):
+        raise RuntimeError("docker stream not available in in-memory docker client")
 
 
 def resolve_container_name(employee_id, user_sub, mapping):
@@ -272,6 +336,60 @@ def is_upstream_ready(container):
                 conn.close()
             except Exception:
                 pass
+
+
+def _websocket_accept_key(sec_key):
+    seed = f"{sec_key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11".encode("utf-8")
+    return base64.b64encode(hashlib.sha1(seed).digest()).decode("ascii")
+
+
+def _ws_read_exact(sock, size):
+    chunks = []
+    remaining = size
+    while remaining > 0:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise ConnectionError("websocket closed")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _ws_read_frame(sock):
+    head = _ws_read_exact(sock, 2)
+    b1, b2 = head[0], head[1]
+    opcode = b1 & 0x0F
+    masked = bool(b2 & 0x80)
+    length = b2 & 0x7F
+    if length == 126:
+        length = struct.unpack("!H", _ws_read_exact(sock, 2))[0]
+    elif length == 127:
+        length = struct.unpack("!Q", _ws_read_exact(sock, 8))[0]
+    mask_key = _ws_read_exact(sock, 4) if masked else b""
+    payload = _ws_read_exact(sock, length) if length else b""
+    if masked and payload:
+        payload = bytes(payload[i] ^ mask_key[i % 4] for i in range(len(payload)))
+    return opcode, payload
+
+
+def _ws_send_frame(sock, payload, opcode=2):
+    if payload is None:
+        payload = b""
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8")
+        opcode = 1
+    length = len(payload)
+    head = bytearray()
+    head.append(0x80 | (opcode & 0x0F))
+    if length < 126:
+        head.append(length)
+    elif length <= 0xFFFF:
+        head.append(126)
+        head.extend(struct.pack("!H", length))
+    else:
+        head.append(127)
+        head.extend(struct.pack("!Q", length))
+    sock.sendall(bytes(head) + payload)
 
 
 def extract_groups(headers):
@@ -1032,6 +1150,11 @@ else:
 THROTTLE = StartupThrottle(max_concurrent=os.getenv("OPENCLAW_STARTUP_MAX_CONCURRENT", "4"))
 PROVISION_LOCKS = {}
 PROVISION_LOCKS_GUARD = threading.Lock()
+CONSOLE_STATIC_ROOT = Path(__file__).resolve().parent / "static" / "console"
+CONSOLE_STATIC_FILES = {
+    "xterm.js": "application/javascript; charset=utf-8",
+    "xterm.css": "text/css; charset=utf-8",
+}
 
 
 def _acquire_provision_lock(key):
@@ -1146,12 +1269,228 @@ class Handler(BaseHTTPRequestHandler):
 </html>"""
         self._html(HTTPStatus.OK, html)
 
+    def _serve_console_asset(self, parsed_path):
+        prefix = "/console/assets/"
+        asset_name = parsed_path[len(prefix) :]
+        if not asset_name or "/" in asset_name or asset_name.startswith("."):
+            self._json(HTTPStatus.NOT_FOUND, {"error": "asset not found"})
+            return
+        content_type = CONSOLE_STATIC_FILES.get(asset_name)
+        if content_type is None:
+            self._json(HTTPStatus.NOT_FOUND, {"error": "asset not found"})
+            return
+        asset_path = CONSOLE_STATIC_ROOT / asset_name
+        try:
+            payload = asset_path.read_bytes()
+        except FileNotFoundError:
+            self._json(HTTPStatus.NOT_FOUND, {"error": "asset missing on server"})
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "public, max-age=86400, immutable")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _console_page(self):
+        html = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenClaw Console</title>
+    <link rel="stylesheet" href="/console/assets/xterm.css" />
+    <style>
+      html, body { margin: 0; width: 100%; height: 100%; background: #0b1020; color: #e5e7eb; }
+      body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      #terminal { width: 100%; height: 100%; padding-top: 34px; box-sizing: border-box; }
+      .banner {
+        position: fixed; top: 8px; left: 8px; z-index: 10; font-size: 12px;
+        background: rgba(15, 23, 42, 0.82); border: 1px solid #334155; border-radius: 6px;
+        padding: 4px 8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .hint {
+        position: fixed; top: 8px; right: 8px; z-index: 10; font-size: 12px;
+        background: rgba(15, 23, 42, 0.82); border: 1px solid #334155; border-radius: 6px;
+        padding: 4px 8px; color: #94a3b8;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="banner">OpenClaw Container Console</div>
+    <div class="hint">Ctrl+C to interrupt, Ctrl+L to clear view</div>
+    <div id="terminal"></div>
+    <script src="/console/assets/xterm.js"></script>
+    <script>
+      if (typeof window.Terminal !== "function") {
+        document.body.innerHTML = "<pre style='padding:12px'>[console error] failed to load xterm.js</pre>";
+      } else {
+        const decoder = new TextDecoder();
+        const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
+        const ws = new WebSocket(`${wsProto}://${window.location.host}/console/ws`);
+        ws.binaryType = "arraybuffer";
+        const term = new Terminal({
+          cursorBlink: true,
+          scrollback: 5000,
+          fontSize: 13,
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace",
+          theme: {
+            background: "#0b1020",
+            foreground: "#e5e7eb",
+            cursor: "#93c5fd",
+            selectionBackground: "#1e293b",
+          },
+        });
+        term.open(document.getElementById("terminal"));
+        term.focus();
+        term.writeln("\\u001b[1;34mOpenClaw Container Console\\u001b[0m");
+        term.writeln("\\u001b[90mConnecting...\\u001b[0m");
+
+        function writeChunk(data) {
+          if (typeof data === "string") {
+            term.write(data);
+            return;
+          }
+          term.write(decoder.decode(new Uint8Array(data), { stream: true }));
+        }
+
+        ws.onopen = () => term.writeln("\\u001b[32m[connected]\\u001b[0m");
+        ws.onclose = () => term.writeln("\\r\\n\\u001b[33m[disconnected]\\u001b[0m");
+        ws.onerror = () => term.writeln("\\r\\n\\u001b[31m[console websocket error]\\u001b[0m");
+        ws.onmessage = (ev) => writeChunk(ev.data);
+        term.onData((data) => {
+          if (ws.readyState === WebSocket.OPEN) ws.send(data);
+        });
+        window.addEventListener("paste", (e) => {
+          const text = e.clipboardData && e.clipboardData.getData("text");
+          if (!text) return;
+          e.preventDefault();
+          if (ws.readyState === WebSocket.OPEN) ws.send(text);
+        });
+        window.addEventListener("click", () => term.focus());
+        window.addEventListener("resize", () => term.focus());
+      }
+    </script>
+  </body>
+</html>"""
+        self._html(HTTPStatus.OK, html)
+
     def _should_use_bootstrap_wait_page(self, parsed_path):
         if parsed_path in {"/health", "/resolve", "/__openclaw__/bootstrap-status"}:
             return False
         if is_websocket_upgrade(self.headers):
             return False
         return is_browser_navigation_request(self.command, self.headers)
+
+    def _open_console_exec_stream(self, container):
+        preferred_shell = os.getenv("OPENCLAW_CONSOLE_SHELL", "/bin/bash -il").strip() or "/bin/sh -i"
+        fallback_shell = os.getenv("OPENCLAW_CONSOLE_FALLBACK_SHELL", "/bin/sh -i").strip() or "/bin/sh -i"
+        shell_candidates = []
+        for raw in (preferred_shell, fallback_shell):
+            try:
+                parts = shlex.split(raw)
+            except ValueError:
+                parts = []
+            if parts and parts not in shell_candidates:
+                shell_candidates.append(parts)
+
+        last_error = None
+        for cmd in shell_candidates:
+            try:
+                created = DOCKER.create_exec(container, cmd, user="node", tty=True)
+                exec_id = created.get("Id") if isinstance(created, dict) else None
+                if not exec_id:
+                    raise RuntimeError("missing exec id")
+                sock, prebuffer = DOCKER.start_exec_stream(exec_id, tty=True)
+                return sock, prebuffer, cmd
+            except Exception as exc:
+                last_error = exc
+        raise RuntimeError(f"failed to open console exec stream: {last_error}")
+
+    def _proxy_console_websocket(self, container):
+        if not is_websocket_upgrade(self.headers):
+            self.send_response(HTTPStatus.UPGRADE_REQUIRED)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "websocket upgrade required"}).encode("utf-8"))
+            return
+
+        sec_key = (self.headers.get("Sec-WebSocket-Key") or "").strip()
+        if not sec_key:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "missing websocket key"})
+            return
+
+        request_id = self.headers.get("X-Request-Id") or self.headers.get("X-Amzn-Trace-Id")
+        exec_sock = None
+        prebuffer = b""
+        cmd = []
+        try:
+            exec_sock, prebuffer, cmd = self._open_console_exec_stream(container)
+            accept = _websocket_accept_key(sec_key)
+            self.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.end_headers()
+
+            emit_identity_audit(
+                "console_ws_connected",
+                request_id=request_id,
+                container=container,
+                path=self.path,
+                shell_command=" ".join(cmd),
+            )
+
+            client = self.connection
+            if prebuffer:
+                _ws_send_frame(client, prebuffer, opcode=2)
+
+            sockets = [client, exec_sock]
+            while True:
+                readable, _, errored = select.select(sockets, [], sockets, 60)
+                if errored:
+                    break
+                if not readable:
+                    continue
+                for sock in readable:
+                    if sock is client:
+                        opcode, payload = _ws_read_frame(client)
+                        if opcode == 8:
+                            _ws_send_frame(client, b"", opcode=8)
+                            return
+                        if opcode == 9:
+                            _ws_send_frame(client, payload, opcode=10)
+                            continue
+                        if opcode not in {1, 2}:
+                            continue
+                        if payload:
+                            exec_sock.sendall(payload)
+                    else:
+                        data = exec_sock.recv(65536)
+                        if not data:
+                            return
+                        _ws_send_frame(client, data, opcode=2)
+        except Exception as exc:
+            emit_identity_audit(
+                "console_ws_error",
+                request_id=request_id,
+                container=container,
+                path=self.path,
+                error=str(exc),
+            )
+            try:
+                if is_websocket_upgrade(self.headers):
+                    _ws_send_frame(self.connection, f"\r\n[console error] {exc}\r\n", opcode=1)
+            except Exception:
+                pass
+            if not is_websocket_upgrade(self.headers):
+                raise
+        finally:
+            if exec_sock is not None:
+                try:
+                    exec_sock.close()
+                except OSError:
+                    pass
 
     def _handle_bootstrap_status(self, parsed):
         query = parse_qs(parsed.query)
@@ -1418,6 +1757,55 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/health":
             self._json(HTTPStatus.OK, {"status": "ok"})
+            return
+
+        if parsed.path.startswith("/console/assets/"):
+            self._serve_console_asset(parsed.path)
+            return
+
+        if parsed.path in ("/console", "/console/"):
+            try:
+                self._resolve_target_container()
+            except ValueError:
+                if self._should_use_bootstrap_wait_page(parsed.path):
+                    self._bootstrap_wait_page(self.path, "Waiting for authenticated identity...")
+                else:
+                    self._json(HTTPStatus.UNAUTHORIZED, {"error": "missing identity"})
+                return
+            except PermissionError:
+                self._json(HTTPStatus.FORBIDDEN, {"error": "identity not allowed"})
+                return
+            except RuntimeError:
+                if self._should_use_bootstrap_wait_page(parsed.path):
+                    self._bootstrap_wait_page(self.path, "OpenClaw instance is starting...")
+                else:
+                    self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "startup throttled"})
+                return
+            except TimeoutError:
+                if self._should_use_bootstrap_wait_page(parsed.path):
+                    self._bootstrap_wait_page(self.path, "OpenClaw instance startup timed out. Retrying...")
+                else:
+                    self._json(HTTPStatus.GATEWAY_TIMEOUT, {"error": "container startup timeout"})
+                return
+            self._console_page()
+            return
+
+        if parsed.path == "/console/ws":
+            try:
+                container = self._resolve_target_container()
+            except ValueError:
+                self._json(HTTPStatus.UNAUTHORIZED, {"error": "missing identity"})
+                return
+            except PermissionError:
+                self._json(HTTPStatus.FORBIDDEN, {"error": "identity not allowed"})
+                return
+            except RuntimeError:
+                self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "startup throttled"})
+                return
+            except TimeoutError:
+                self._json(HTTPStatus.GATEWAY_TIMEOUT, {"error": "container startup timeout"})
+                return
+            self._proxy_console_websocket(container)
             return
 
         if parsed.path == "/favicon.ico":
