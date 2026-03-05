@@ -6,6 +6,7 @@ import json
 
 from services_instance_manager.main import (
     DockerAPIError,
+    _inject_trusted_proxy_user_header_if_needed,
     _write_last_active_marker,
     ensure_container_exists,
     extract_identity,
@@ -77,6 +78,28 @@ class JITProvisionTests(unittest.TestCase):
             )
         )
         self.assertFalse(is_websocket_upgrade({"Connection": "keep-alive", "Upgrade": "websocket"}))
+        self.assertTrue(
+            is_websocket_upgrade(
+                {
+                    "Upgrade": "websocket",
+                    "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+                }
+            )
+        )
+
+    def test_injects_trusted_proxy_user_header_when_missing(self):
+        headers = {
+            "X-Forwarded-Email": "fyue@yinxiang.com",
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER": "x-forwarded-user",
+            },
+            clear=False,
+        ):
+            _inject_trusted_proxy_user_header_if_needed(headers)
+        self.assertEqual(headers.get("x-forwarded-user"), "fyue@yinxiang.com")
 
     def test_creates_user_artifacts_and_container(self):
         docker = FakeDocker()
@@ -112,11 +135,43 @@ class JITProvisionTests(unittest.TestCase):
             self.assertEqual(cfg.get("gateway", {}).get("auth", {}).get("mode"), "trusted-proxy")
             self.assertEqual(
                 cfg.get("gateway", {}).get("auth", {}).get("trustedProxy", {}).get("userHeader"),
-                "x-forwarded-user",
+                "host",
             )
             self.assertEqual(
                 cfg.get("gateway", {}).get("trustedProxies"),
                 ["127.0.0.1/32", "172.16.0.0/12"],
+            )
+            self.assertTrue(
+                cfg.get("plugins", {}).get("entries", {}).get("telegram", {}).get("enabled"),
+            )
+            self.assertTrue(
+                cfg.get("plugins", {}).get("entries", {}).get("googlechat", {}).get("enabled"),
+            )
+            self.assertEqual(
+                cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary"),
+                "openai/gpt-5.2",
+            )
+            self.assertIn(
+                "openai/gpt-5.2",
+                cfg.get("agents", {}).get("defaults", {}).get("models", {}),
+            )
+            self.assertEqual(
+                cfg.get("agents", {}).get("defaults", {}).get("models", {}).get("openai/gpt-5.2", {}).get(
+                    "params", {}
+                ).get("transport"),
+                "sse",
+            )
+            self.assertEqual(
+                cfg.get("models", {}).get("providers", {}).get("openai", {}).get("baseUrl"),
+                "https://api.openai.com/v1",
+            )
+            self.assertEqual(
+                cfg.get("models", {}).get("providers", {}).get("openai", {}).get("api"),
+                "openai-responses",
+            )
+            self.assertEqual(
+                cfg.get("models", {}).get("providers", {}).get("openai", {}).get("models", [{}])[0].get("id"),
+                "gpt-5.2",
             )
             _, spec = docker.created[0]
             binds = spec.get("HostConfig", {}).get("Binds", [])
@@ -163,6 +218,16 @@ class JITProvisionTests(unittest.TestCase):
             self.assertEqual(trusted_proxy.get("userHeader"), "x-forwarded-email")
             self.assertNotIn("emailHeader", trusted_proxy)
             self.assertNotIn("cidrs", trusted_proxy)
+            self.assertEqual(
+                cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary"),
+                "openai/gpt-5.2",
+            )
+            self.assertEqual(
+                cfg.get("agents", {}).get("defaults", {}).get("models", {}).get("openai/gpt-5.2", {}).get(
+                    "params", {}
+                ).get("transport"),
+                "sse",
+            )
 
     def test_repairs_existing_container_runtime_without_requiring_default_key(self):
         docker = FakeDocker()
@@ -173,7 +238,6 @@ class JITProvisionTests(unittest.TestCase):
                 "OPENCLAW_USERS_ROOT": tmpdir,
                 "OPENCLAW_DEFAULT_OPENAI_KEY": "",
                 "OPENCLAW_GATEWAY_AUTH_MODE": "trusted-proxy",
-                "OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER": "x-forwarded-user",
                 "OPENCLAW_GATEWAY_TRUSTED_PROXIES": "127.0.0.1/32,172.16.0.0/12",
             },
             clear=False,
@@ -198,8 +262,215 @@ class JITProvisionTests(unittest.TestCase):
             with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             trusted_proxy = cfg.get("gateway", {}).get("auth", {}).get("trustedProxy", {})
-            self.assertEqual(trusted_proxy.get("userHeader"), "x-forwarded-user")
+            self.assertEqual(trusted_proxy.get("userHeader"), "host")
             self.assertNotIn("emailHeader", trusted_proxy)
+            self.assertEqual(
+                cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary"),
+                "openai/gpt-5.2",
+            )
+            self.assertEqual(
+                cfg.get("agents", {}).get("defaults", {}).get("models", {}).get("openai/gpt-5.2", {}).get(
+                    "params", {}
+                ).get("transport"),
+                "sse",
+            )
+
+    def test_repairs_gateway_auth_mode_from_token_to_trusted_proxy(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1001")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
+                "OPENCLAW_GATEWAY_AUTH_MODE": "trusted-proxy",
+                "OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER": "x-forwarded-user",
+                "OPENCLAW_GATEWAY_TRUSTED_PROXIES": "127.0.0.1/32,172.16.0.0/12",
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1001/runtime", exist_ok=True)
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "gateway": {
+                            "auth": {
+                                "mode": "token",
+                                "token": "legacy-token",
+                                "trustedProxy": {
+                                    "userHeader": "x-forwarded-user",
+                                },
+                            }
+                        }
+                    },
+                    f,
+                )
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "existing")
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertEqual(cfg.get("gateway", {}).get("auth", {}).get("mode"), "trusted-proxy")
+            self.assertEqual(
+                cfg.get("gateway", {}).get("auth", {}).get("trustedProxy", {}).get("userHeader"),
+                "x-forwarded-user",
+            )
+
+    def test_repairs_anthropic_primary_model_to_openai_default(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1001")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_MODEL": "gpt-5.3-codex",
+                "OPENCLAW_ALLOWED_MODELS": "gpt-5.2,gpt-5.3-codex",
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1001/runtime", exist_ok=True)
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "agents": {
+                            "defaults": {
+                                "model": {"primary": "anthropic/claude-opus-4-6"},
+                                "models": {"anthropic/claude-opus-4-6": {}},
+                            }
+                        }
+                    },
+                    f,
+                )
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "existing")
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertEqual(
+                cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary"),
+                "openai/gpt-5.3-codex",
+            )
+            self.assertIn(
+                "openai/gpt-5.3-codex",
+                cfg.get("agents", {}).get("defaults", {}).get("models", {}),
+            )
+            self.assertEqual(
+                cfg.get("agents", {}).get("defaults", {}).get("models", {}).get("openai/gpt-5.3-codex", {}).get(
+                    "params", {}
+                ).get("transport"),
+                "sse",
+            )
+
+    def test_channel_plugins_default_enabled_without_overriding_explicit_false(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1001")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
+                "OPENCLAW_DEFAULT_CHANNEL_PLUGINS": "telegram,googlechat",
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1001/runtime", exist_ok=True)
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "plugins": {
+                            "entries": {
+                                "telegram": {"enabled": False},
+                            }
+                        }
+                    },
+                    f,
+                )
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "existing")
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertFalse(cfg.get("plugins", {}).get("entries", {}).get("telegram", {}).get("enabled"))
+            self.assertTrue(cfg.get("plugins", {}).get("entries", {}).get("googlechat", {}).get("enabled"))
+
+    def test_repairs_local_device_pairing_scopes_for_cli(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1001")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1001/runtime/identity", exist_ok=True)
+            os.makedirs(f"{tmpdir}/u1001/runtime/devices", exist_ok=True)
+            with open(f"{tmpdir}/u1001/runtime/identity/device.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "version": 1,
+                        "deviceId": "dev-1",
+                        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\\nabc\\n-----END PUBLIC KEY-----\\n",
+                    },
+                    f,
+                )
+            with open(f"{tmpdir}/u1001/runtime/devices/paired.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "dev-1": {
+                            "deviceId": "dev-1",
+                            "publicKey": "abc",
+                            "role": "operator",
+                            "roles": ["operator"],
+                            "scopes": ["operator.read"],
+                            "approvedScopes": ["operator.read"],
+                            "tokens": {
+                                "operator": {
+                                    "token": "tok-1",
+                                    "role": "operator",
+                                    "scopes": ["operator.read"],
+                                }
+                            },
+                        }
+                    },
+                    f,
+                )
+            with open(f"{tmpdir}/u1001/runtime/devices/pending.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "req-1": {
+                            "requestId": "req-1",
+                            "deviceId": "dev-1",
+                            "role": "operator",
+                            "scopes": ["operator.admin", "operator.read", "operator.write"],
+                            "ts": 123,
+                        }
+                    },
+                    f,
+                )
+
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "existing")
+
+            with open(f"{tmpdir}/u1001/runtime/devices/paired.json", "r", encoding="utf-8") as f:
+                paired = json.load(f)
+            with open(f"{tmpdir}/u1001/runtime/devices/pending.json", "r", encoding="utf-8") as f:
+                pending = json.load(f)
+
+            scopes = paired.get("dev-1", {}).get("scopes", [])
+            for required in [
+                "operator.admin",
+                "operator.read",
+                "operator.write",
+                "operator.approvals",
+                "operator.pairing",
+            ]:
+                self.assertIn(required, scopes)
+                self.assertIn(required, paired.get("dev-1", {}).get("approvedScopes", []))
+                self.assertIn(
+                    required,
+                    paired.get("dev-1", {}).get("tokens", {}).get("operator", {}).get("scopes", []),
+                )
+            self.assertEqual(pending, {})
 
     def test_fails_when_default_key_missing_for_jit(self):
         docker = FakeDocker()

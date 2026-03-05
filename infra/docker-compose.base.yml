@@ -1,4 +1,9 @@
 services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+
   traefik:
     image: traefik:v3.1
     command:
@@ -14,6 +19,8 @@ services:
 
   oauth2-proxy:
     image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    depends_on:
+      - redis
     command:
       - --config=/etc/oauth2-proxy/oauth2-proxy.cfg
     environment:
@@ -49,8 +56,9 @@ services:
       OPENCLAW_CONTROL_UI_ORIGIN: ${OPENCLAW_CONTROL_UI_ORIGIN:-}
       OPENCLAW_GATEWAY_AUTH_MODE: ${OPENCLAW_GATEWAY_AUTH_MODE:-trusted-proxy}
       OPENCLAW_GATEWAY_AUTH_TOKEN: ${OPENCLAW_GATEWAY_AUTH_TOKEN:-}
-      OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER: ${OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER:-x-forwarded-user}
+      OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER: ${OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER:-host}
       OPENCLAW_GATEWAY_TRUSTED_PROXIES: ${OPENCLAW_GATEWAY_TRUSTED_PROXIES:-127.0.0.1/32,172.16.0.0/12}
+      OPENCLAW_DEFAULT_CHANNEL_PLUGINS: ${OPENCLAW_DEFAULT_CHANNEL_PLUGINS:-telegram,googlechat}
       OPENCLAW_DEFAULT_OPENAI_KEY: ${OPENCLAW_DEFAULT_OPENAI_KEY}
       OPENCLAW_DEFAULT_OPENAI_MODEL: ${OPENCLAW_DEFAULT_OPENAI_MODEL}
       OPENCLAW_HEALTH_TIMEOUT_SECONDS: ${OPENCLAW_HEALTH_TIMEOUT_SECONDS}

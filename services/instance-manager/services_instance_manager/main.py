@@ -13,6 +13,14 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+DEFAULT_OPERATOR_SCOPES = [
+    "operator.admin",
+    "operator.read",
+    "operator.write",
+    "operator.approvals",
+    "operator.pairing",
+]
+
 
 class StartupThrottle:
     def __init__(self, max_concurrent):
@@ -168,9 +176,14 @@ def split_csv_values(text):
 
 
 def is_websocket_upgrade(headers):
+    # Some reverse-proxy chains may drop/reshape Connection while still forwarding
+    # websocket handshake keys. Treat the request as websocket if either pattern matches.
     upgrade = (headers.get("Upgrade") or "").strip().lower()
     connection = (headers.get("Connection") or "").strip().lower()
-    return upgrade == "websocket" and "upgrade" in connection
+    ws_key = (headers.get("Sec-WebSocket-Key") or "").strip()
+    if upgrade == "websocket" and "upgrade" in connection:
+        return True
+    return bool(ws_key and upgrade == "websocket")
 
 
 def extract_groups(headers):
@@ -200,6 +213,46 @@ def is_identity_allowed(headers, allowed_email_domains, allowed_groups):
         group_ok = any(g in groups for g in allowed_groups)
 
     return email_ok and group_ok
+
+
+def _trusted_proxy_user_header_name():
+    return (
+        os.getenv("OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER", "host").strip().lower() or "host"
+    )
+
+
+def _pick_identity_header_value(headers):
+    for name in (
+        "X-Employee-Id",
+        "X-Forwarded-User",
+        "X-Auth-Request-User",
+        "X-Forwarded-Email",
+        "X-Auth-Request-Email",
+    ):
+        value = headers.get(name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _inject_trusted_proxy_user_header_if_needed(headers):
+    target = _trusted_proxy_user_header_name()
+    if target == "host":
+        return
+
+    exists = False
+    for key in headers.keys():
+        if key.lower() == target:
+            value = headers.get(key)
+            if isinstance(value, str) and value.strip():
+                exists = True
+                break
+    if exists:
+        return
+
+    value = _pick_identity_header_value(headers)
+    if value:
+        headers[target] = value
 
 
 def _safe_mkdir(path, mode):
@@ -237,6 +290,155 @@ def _write_last_active_marker(identity, users_root):
     container_uid = int(os.getenv("OPENCLAW_CONTAINER_UID", "1000"))
     container_gid = int(os.getenv("OPENCLAW_CONTAINER_GID", "1000"))
     _safe_chown(marker_path, container_uid, container_gid)
+
+
+def _read_json_object(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return payload if isinstance(payload, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_json_object(path, payload, mode, uid, gid):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=True, indent=2)
+        f.write("\n")
+    os.chmod(path, mode)
+    _safe_chown(path, uid, gid)
+
+
+def _merge_unique_str_values(values):
+    out = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        item = value.strip()
+        if not item or item in out:
+            continue
+        out.append(item)
+    return out
+
+
+def _resolve_operator_scopes():
+    configured = split_csv_values(
+        os.getenv("OPENCLAW_OPERATOR_SCOPES", ",".join(DEFAULT_OPERATOR_SCOPES))
+    )
+    only_operator_scopes = [scope for scope in configured if scope.startswith("operator.")]
+    merged = _merge_unique_str_values(only_operator_scopes)
+    return merged or list(DEFAULT_OPERATOR_SCOPES)
+
+
+def _repair_local_device_pairing(runtime_dir, uid, gid):
+    identity_path = os.path.join(runtime_dir, "identity", "device.json")
+    if not os.path.exists(identity_path):
+        return
+
+    identity = _read_json_object(identity_path)
+    device_id_raw = identity.get("deviceId")
+    device_id = device_id_raw.strip() if isinstance(device_id_raw, str) else ""
+    if not device_id:
+        return
+
+    devices_dir = os.path.join(runtime_dir, "devices")
+    _safe_mkdir(devices_dir, 0o700)
+    _safe_chown(devices_dir, uid, gid)
+    paired_path = os.path.join(devices_dir, "paired.json")
+    pending_path = os.path.join(devices_dir, "pending.json")
+    paired = _read_json_object(paired_path)
+    pending = _read_json_object(pending_path)
+    scopes = _resolve_operator_scopes()
+    now_ms = int(time.time() * 1000)
+
+    paired_entry = paired.get(device_id)
+    if not isinstance(paired_entry, dict):
+        latest_pending = None
+        latest_pending_ts = -1
+        for request in pending.values():
+            if not isinstance(request, dict):
+                continue
+            if request.get("deviceId") != device_id:
+                continue
+            ts = request.get("ts")
+            ts_int = int(ts) if isinstance(ts, int) else -1
+            if ts_int >= latest_pending_ts:
+                latest_pending = request
+                latest_pending_ts = ts_int
+        if isinstance(latest_pending, dict):
+            paired_entry = {
+                "deviceId": device_id,
+                "publicKey": latest_pending.get("publicKey"),
+                "platform": latest_pending.get("platform"),
+                "clientId": latest_pending.get("clientId") or "gateway-client",
+                "clientMode": latest_pending.get("clientMode") or "backend",
+                "role": "operator",
+                "roles": ["operator"],
+                "scopes": list(scopes),
+                "approvedScopes": list(scopes),
+                "createdAtMs": latest_pending.get("ts") or now_ms,
+                "approvedAtMs": now_ms,
+            }
+            paired[device_id] = paired_entry
+
+    paired_changed = False
+    if isinstance(paired_entry, dict):
+        roles = _merge_unique_str_values([*(paired_entry.get("roles") or []), "operator"])
+        if paired_entry.get("roles") != roles:
+            paired_entry["roles"] = roles
+            paired_changed = True
+        if paired_entry.get("role") != "operator":
+            paired_entry["role"] = "operator"
+            paired_changed = True
+
+        merged_scopes = _merge_unique_str_values([*(paired_entry.get("scopes") or []), *scopes])
+        if paired_entry.get("scopes") != merged_scopes:
+            paired_entry["scopes"] = merged_scopes
+            paired_changed = True
+
+        approved_scopes = _merge_unique_str_values(
+            [*(paired_entry.get("approvedScopes") or []), *scopes]
+        )
+        if paired_entry.get("approvedScopes") != approved_scopes:
+            paired_entry["approvedScopes"] = approved_scopes
+            paired_changed = True
+
+        tokens = paired_entry.get("tokens")
+        if isinstance(tokens, dict):
+            operator_token = tokens.get("operator")
+            if isinstance(operator_token, dict):
+                if operator_token.get("role") != "operator":
+                    operator_token["role"] = "operator"
+                    paired_changed = True
+                token_scopes = _merge_unique_str_values([*(operator_token.get("scopes") or []), *scopes])
+                if operator_token.get("scopes") != token_scopes:
+                    operator_token["scopes"] = token_scopes
+                    paired_changed = True
+
+    pending_changed = False
+    if pending:
+        remove_ids = []
+        for request_id, request in pending.items():
+            if isinstance(request, dict) and request.get("deviceId") == device_id:
+                remove_ids.append(request_id)
+        if remove_ids:
+            for request_id in remove_ids:
+                pending.pop(request_id, None)
+            pending_changed = True
+
+    if paired_changed:
+        _write_json_object(paired_path, paired, 0o600, uid, gid)
+    elif os.path.exists(paired_path):
+        os.chmod(paired_path, 0o600)
+        _safe_chown(paired_path, uid, gid)
+
+    if pending_changed:
+        _write_json_object(pending_path, pending, 0o600, uid, gid)
+    elif os.path.exists(pending_path):
+        os.chmod(pending_path, 0o600)
+        _safe_chown(pending_path, uid, gid)
 
 
 def _ensure_runtime_config(runtime_dir, uid, gid):
@@ -281,7 +483,8 @@ def _ensure_runtime_config(runtime_dir, uid, gid):
         auth = {}
         gateway["auth"] = auth
     auth_mode = os.getenv("OPENCLAW_GATEWAY_AUTH_MODE", "trusted-proxy").strip() or "trusted-proxy"
-    auth.setdefault("mode", auth_mode)
+    if not isinstance(auth.get("mode"), str) or auth.get("mode") != auth_mode:
+        auth["mode"] = auth_mode
     token = os.getenv("OPENCLAW_GATEWAY_AUTH_TOKEN", "").strip()
     if token and not auth.get("token"):
         auth["token"] = token
@@ -293,12 +496,12 @@ def _ensure_runtime_config(runtime_dir, uid, gid):
         # Remove keys that were used in prior failed experiments and are rejected by OpenClaw schema.
         trusted_proxy.pop("emailHeader", None)
         trusted_proxy.pop("cidrs", None)
+        configured_user_header = (
+            os.getenv("OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER", "host").strip() or "host"
+        )
         user_header = trusted_proxy.get("userHeader")
-        if not isinstance(user_header, str) or not user_header.strip():
-            trusted_proxy["userHeader"] = (
-                os.getenv("OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER", "x-forwarded-user").strip()
-                or "x-forwarded-user"
-            )
+        if not isinstance(user_header, str) or user_header.strip() != configured_user_header:
+            trusted_proxy["userHeader"] = configured_user_header
         auth["trustedProxy"] = trusted_proxy
 
         trusted_proxies = gateway.get("trustedProxies")
@@ -306,6 +509,134 @@ def _ensure_runtime_config(runtime_dir, uid, gid):
             gateway["trustedProxies"] = split_csv_values(
                 os.getenv("OPENCLAW_GATEWAY_TRUSTED_PROXIES", "127.0.0.1/32,172.16.0.0/12")
             )
+
+    # Ensure commonly used channel plugins are enabled by default so Channels page can
+    # resolve per-channel config schema (users can still override later in runtime config).
+    plugins = cfg.get("plugins")
+    if not isinstance(plugins, dict):
+        plugins = {}
+        cfg["plugins"] = plugins
+    entries = plugins.get("entries")
+    if not isinstance(entries, dict):
+        entries = {}
+        plugins["entries"] = entries
+    default_channel_plugins = split_csv_values(
+        os.getenv("OPENCLAW_DEFAULT_CHANNEL_PLUGINS", "telegram,googlechat")
+    )
+    for plugin_id in default_channel_plugins:
+        if not re.match(r"^[a-z0-9._-]+$", plugin_id):
+            continue
+        entry = entries.get(plugin_id)
+        if not isinstance(entry, dict):
+            entry = {}
+            entries[plugin_id] = entry
+        if not isinstance(entry.get("enabled"), bool):
+            entry["enabled"] = True
+
+    # Ensure the default agent model is OpenAI-based so users don't fall back to image defaults
+    # such as anthropic/claude-opus-* when no anthropic auth is configured.
+    desired_model = os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", "gpt-5.2").strip() or "gpt-5.2"
+    if "/" not in desired_model:
+        desired_model = f"openai/{desired_model}"
+    allowed_models = split_csv_values(os.getenv("OPENCLAW_ALLOWED_MODELS", ""))
+    allowed_models = [m if "/" in m else f"openai/{m}" for m in allowed_models]
+
+    agents = cfg.get("agents")
+    if not isinstance(agents, dict):
+        agents = {}
+        cfg["agents"] = agents
+    defaults = agents.get("defaults")
+    if not isinstance(defaults, dict):
+        defaults = {}
+        agents["defaults"] = defaults
+    model_cfg = defaults.get("model")
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+        defaults["model"] = model_cfg
+
+    primary = model_cfg.get("primary")
+    should_set_primary = not isinstance(primary, str) or not primary.strip()
+    if not should_set_primary and isinstance(primary, str):
+        if primary.startswith("anthropic/"):
+            should_set_primary = True
+        elif allowed_models and primary not in allowed_models:
+            should_set_primary = True
+    if should_set_primary:
+        model_cfg["primary"] = desired_model
+        primary = desired_model
+
+    models_cfg = defaults.get("models")
+    if not isinstance(models_cfg, dict):
+        models_cfg = {}
+        defaults["models"] = models_cfg
+    if isinstance(primary, str) and primary and primary not in models_cfg:
+        models_cfg[primary] = {}
+
+    normalized_openai_model_ids = []
+    for model_ref in allowed_models:
+        if not isinstance(model_ref, str) or not model_ref.strip():
+            continue
+        ref = model_ref.strip()
+        if "/" in ref:
+            provider, model_id = ref.split("/", 1)
+            if provider.strip().lower() != "openai":
+                continue
+            candidate = model_id.strip()
+        else:
+            candidate = ref
+        if candidate and candidate not in normalized_openai_model_ids:
+            normalized_openai_model_ids.append(candidate)
+    if isinstance(primary, str) and primary.startswith("openai/"):
+        primary_model_id = primary.split("/", 1)[1].strip()
+        if primary_model_id and primary_model_id not in normalized_openai_model_ids:
+            normalized_openai_model_ids.insert(0, primary_model_id)
+    if not normalized_openai_model_ids:
+        normalized_openai_model_ids = [desired_model.split("/", 1)[1]]
+
+    # Force OpenAI requests over HTTP/SSE via configured endpoint.
+    # This avoids hardcoded direct OpenAI WebSocket routing when using gateway HTTP proxy endpoints.
+    models_root = cfg.get("models")
+    if not isinstance(models_root, dict):
+        models_root = {}
+        cfg["models"] = models_root
+    providers = models_root.get("providers")
+    if not isinstance(providers, dict):
+        providers = {}
+        models_root["providers"] = providers
+    openai_provider = providers.get("openai")
+    if not isinstance(openai_provider, dict):
+        openai_provider = {}
+    openai_provider["baseUrl"] = (
+        os.getenv("OPENCLAW_DEFAULT_OPENAI_ENDPOINT", "https://api.openai.com/v1").strip()
+        or "https://api.openai.com/v1"
+    )
+    openai_provider["api"] = "openai-responses"
+    openai_provider["models"] = [
+        {
+            "id": model_id,
+            "name": model_id,
+            "reasoning": True,
+            "input": ["text", "image"],
+            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 200000,
+            "maxTokens": 32768,
+        }
+        for model_id in normalized_openai_model_ids
+    ]
+    providers["openai"] = openai_provider
+
+    for model_id in normalized_openai_model_ids:
+        model_ref = f"openai/{model_id}"
+        model_entry = models_cfg.get(model_ref)
+        if not isinstance(model_entry, dict):
+            model_entry = {}
+            models_cfg[model_ref] = model_entry
+        params = model_entry.get("params")
+        if not isinstance(params, dict):
+            params = {}
+            model_entry["params"] = params
+        params.setdefault("transport", "sse")
+        params.setdefault("openaiWsWarmup", False)
 
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=True, indent=2)
@@ -330,6 +661,7 @@ def ensure_user_runtime(identity, users_root):
     _safe_chown(config_dir, container_uid, container_gid)
     _safe_chown(runtime_dir, container_uid, container_gid)
     _ensure_runtime_config(runtime_dir, container_uid, container_gid)
+    _repair_local_device_pairing(runtime_dir, container_uid, container_gid)
     return {
         "data_dir": data_dir,
         "config_dir": config_dir,
@@ -621,16 +953,51 @@ class Handler(BaseHTTPRequestHandler):
         upstream_port = int(os.getenv("OPENCLAW_INSTANCE_PORT", "18789"))
         upstream = socket.create_connection((container, upstream_port), timeout=30)
         client = self.connection
+        handshake_established = False
 
         try:
+            request_id = self.headers.get("X-Request-Id") or self.headers.get("X-Amzn-Trace-Id")
+            trusted_header = _trusted_proxy_user_header_name()
+            has_trusted_header = bool(
+                self.headers.get(trusted_header)
+                if trusted_header == "host"
+                else any(
+                    key.lower() == trusted_header
+                    and isinstance(self.headers.get(key), str)
+                    and self.headers.get(key).strip()
+                    for key in self.headers.keys()
+                )
+            )
+            emit_identity_audit(
+                "ws_proxy_handshake",
+                request_id=request_id,
+                container=container,
+                path=self.path,
+                trusted_user_header=trusted_header,
+                trusted_user_present=has_trusted_header,
+                has_upgrade_header=bool((self.headers.get("Upgrade") or "").strip()),
+                has_ws_key=bool((self.headers.get("Sec-WebSocket-Key") or "").strip()),
+            )
             request_lines = [f"{self.command} {self.path} HTTP/1.1"]
             has_host = False
+            upstream_headers = dict(self.headers.items())
+            _inject_trusted_proxy_user_header_if_needed(upstream_headers)
             for key, value in self.headers.items():
                 if key.lower() == "host":
                     has_host = True
                     request_lines.append(f"Host: {container}:{upstream_port}")
-                else:
+                elif key.lower() in {"connection", "upgrade", "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions", "sec-websocket-protocol", "origin", "cookie", "authorization", "x-forwarded-user", "x-forwarded-email", "x-auth-request-user", "x-auth-request-email", "x-request-id", "x-amzn-trace-id"}:
+                    # keep original iteration order for handshake-critical headers
                     request_lines.append(f"{key}: {value}")
+                elif key in upstream_headers:
+                    request_lines.append(f"{key}: {upstream_headers.pop(key)}")
+            # add any injected header that was absent in incoming handshake
+            for key, value in upstream_headers.items():
+                if key.lower() == "host":
+                    continue
+                if any(existing.split(":", 1)[0].strip().lower() == key.lower() for existing in request_lines[1:]):
+                    continue
+                request_lines.append(f"{key}: {value}")
             if not has_host:
                 request_lines.append(f"Host: {container}:{upstream_port}")
             raw_request = ("\r\n".join(request_lines) + "\r\n\r\n").encode("utf-8")
@@ -656,10 +1023,16 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) >= 2 and parts[1].isdigit():
                 status_code = int(parts[1])
             if status_code != 101:
+                emit_identity_audit(
+                    "ws_proxy_non_101",
+                    request_id=request_id,
+                    container=container,
+                    path=self.path,
+                    status_line=status_line,
+                )
                 return
 
-            client.setblocking(False)
-            upstream.setblocking(False)
+            handshake_established = True
             sockets = [client, upstream]
             while True:
                 readable, _, errored = select.select(sockets, [], sockets, 60)
@@ -670,12 +1043,30 @@ class Handler(BaseHTTPRequestHandler):
                 for sock in readable:
                     try:
                         data = sock.recv(65536)
+                    except BlockingIOError:
+                        continue
                     except OSError:
                         return
                     if not data:
                         return
                     target = upstream if sock is client else client
-                    target.sendall(data)
+                    try:
+                        target.sendall(data)
+                    except BlockingIOError:
+                        continue
+        except Exception as exc:
+            request_id = self.headers.get("X-Request-Id") or self.headers.get("X-Amzn-Trace-Id")
+            emit_identity_audit(
+                "ws_proxy_error",
+                request_id=request_id,
+                container=container,
+                path=self.path,
+                handshake_established=handshake_established,
+                error=str(exc),
+            )
+            if not handshake_established:
+                raise
+            return
         finally:
             try:
                 upstream.close()
@@ -699,6 +1090,7 @@ class Handler(BaseHTTPRequestHandler):
             for key, value in self.headers.items()
             if key.lower() not in {"host", "connection", "content-length"}
         }
+        _inject_trusted_proxy_user_header_if_needed(upstream_headers)
         conn.request(method, self.path, body=body, headers=upstream_headers)
         upstream_resp = conn.getresponse()
         upstream_body = upstream_resp.read()
