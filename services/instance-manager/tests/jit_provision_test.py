@@ -247,6 +247,9 @@ class JITProvisionTests(unittest.TestCase):
             self.assertTrue(
                 cfg.get("plugins", {}).get("entries", {}).get("googlechat", {}).get("enabled"),
             )
+            self.assertTrue(
+                cfg.get("tools", {}).get("media", {}).get("image", {}).get("enabled"),
+            )
             self.assertEqual(
                 cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary"),
                 "openai/gpt-5.2",
@@ -279,6 +282,15 @@ class JITProvisionTests(unittest.TestCase):
             env_entries = spec.get("Env", [])
             self.assertTrue(any(e.startswith("OPENCLAW_GATEWAY_TOKEN=") for e in env_entries))
             self.assertTrue(any(e.startswith("OPENCLAW_GATEWAY_AUTH_TOKEN=") for e in env_entries))
+            cmd = spec.get("Cmd", [])
+            self.assertEqual(cmd[:2], ["sh", "-lc"])
+            self.assertIn("openai-responses.js", cmd[2] if len(cmd) > 2 else "")
+            self.assertIn("openai-responses-shared.js", cmd[2] if len(cmd) > 2 else "")
+            self.assertIn("store: true", cmd[2] if len(cmd) > 2 else "")
+            self.assertIn("thinkingSignature", cmd[2] if len(cmd) > 2 else "")
+            self.assertIn("textSignature", cmd[2] if len(cmd) > 2 else "")
+            self.assertIn("msgId = undefined", cmd[2] if len(cmd) > 2 else "")
+            self.assertIn("if (false", cmd[2] if len(cmd) > 2 else "")
 
     def test_repairs_legacy_trusted_proxy_config(self):
         docker = FakeDocker()
@@ -544,6 +556,101 @@ class JITProvisionTests(unittest.TestCase):
                 cfg = json.load(f)
             self.assertFalse(cfg.get("plugins", {}).get("entries", {}).get("telegram", {}).get("enabled"))
             self.assertTrue(cfg.get("plugins", {}).get("entries", {}).get("googlechat", {}).get("enabled"))
+
+    def test_webchat_file_upload_default_enabled_without_overriding_explicit_false(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1001")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1001/runtime", exist_ok=True)
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "tools": {
+                            "media": {
+                                "image": {
+                                    "enabled": False,
+                                }
+                            }
+                        }
+                    },
+                    f,
+                )
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "existing")
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertFalse(cfg.get("tools", {}).get("media", {}).get("image", {}).get("enabled"))
+
+    def test_webchat_file_upload_default_enabled_when_missing(self):
+        docker = FakeDocker()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
+                "OPENCLAW_DEFAULT_OPENAI_MODEL": "gpt-5.2",
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+            },
+            clear=False,
+        ):
+            status = ensure_container_exists(docker, identity="u1002", container="openclaw-u1002")
+            self.assertEqual(status, "created")
+            with open(f"{tmpdir}/u1002/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertTrue(cfg.get("tools", {}).get("media", {}).get("image", {}).get("enabled"))
+
+    def test_disables_default_store_patch_startup_cmd_when_flag_off(self):
+        docker = FakeDocker()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
+                "OPENCLAW_DEFAULT_OPENAI_MODEL": "gpt-5.2",
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+                "OPENCLAW_FORCE_RESPONSES_STORE": "false",
+            },
+            clear=False,
+        ):
+            status = ensure_container_exists(docker, identity="u1003", container="openclaw-u1003")
+            self.assertEqual(status, "created")
+            _, spec = docker.created[0]
+            self.assertNotIn("Cmd", spec)
+
+    def test_custom_startup_cmd_overrides_default_store_patch(self):
+        docker = FakeDocker()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
+                "OPENCLAW_DEFAULT_OPENAI_MODEL": "gpt-5.2",
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+                "OPENCLAW_FORCE_RESPONSES_STORE": "true",
+                "OPENCLAW_STARTUP_CMD": "node openclaw.mjs gateway --allow-unconfigured",
+            },
+            clear=False,
+        ):
+            status = ensure_container_exists(docker, identity="u1004", container="openclaw-u1004")
+            self.assertEqual(status, "created")
+            _, spec = docker.created[0]
+            self.assertEqual(
+                spec.get("Cmd"),
+                ["node", "openclaw.mjs", "gateway", "--allow-unconfigured"],
+            )
 
     def test_repairs_local_device_pairing_scopes_for_cli(self):
         docker = FakeDocker()

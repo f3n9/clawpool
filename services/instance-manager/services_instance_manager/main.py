@@ -825,6 +825,23 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
         if not isinstance(entry.get("enabled"), bool):
             entry["enabled"] = True
 
+    # Enable webchat image attachments by default for new/legacy users that do
+    # not have an explicit preference yet.
+    tools = cfg.get("tools")
+    if not isinstance(tools, dict):
+        tools = {}
+        cfg["tools"] = tools
+    media = tools.get("media")
+    if not isinstance(media, dict):
+        media = {}
+        tools["media"] = media
+    image = media.get("image")
+    if not isinstance(image, dict):
+        image = {}
+        media["image"] = image
+    if not isinstance(image.get("enabled"), bool):
+        image["enabled"] = True
+
     # Ensure the default agent model is OpenAI-based so users don't fall back to image defaults
     # such as anthropic/claude-opus-* when no anthropic auth is configured.
     desired_model = os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", "gpt-5.2").strip() or "gpt-5.2"
@@ -967,6 +984,39 @@ def _ensure_user_gateway_token(identity, users_root):
     return token
 
 
+def _should_force_openai_responses_store():
+    enabled = os.getenv("OPENCLAW_FORCE_RESPONSES_STORE", "true").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        return False
+    api = (os.getenv("OPENCLAW_OPENAI_API", "").strip() or "openai-responses").lower()
+    return api == "openai-responses"
+
+
+def _build_default_startup_cmd():
+    target = "/app/node_modules/@mariozechner/pi-ai/dist/providers/openai-responses.js"
+    shared = "/app/node_modules/@mariozechner/pi-ai/dist/providers/openai-responses-shared.js"
+    script = (
+        f'if [ -f {shlex.quote(target)} ]; then '
+        f'grep -q "store: false," {shlex.quote(target)} '
+        f'&& sed -i \'s/store: false,/store: true,/g\' {shlex.quote(target)} || true; '
+        "fi; "
+        f'if [ -f {shlex.quote(shared)} ]; then '
+        f'grep -q "currentBlock.thinkingSignature = JSON.stringify(item);" {shlex.quote(shared)} '
+        f'&& sed -i \'s|currentBlock.thinkingSignature = JSON.stringify(item);|// stripped by instance-manager to avoid stale rs item replay|g\' {shlex.quote(shared)} || true; '
+        f'grep -q "currentBlock.textSignature = item.id;" {shlex.quote(shared)} '
+        f'&& sed -i \'s|currentBlock.textSignature = item.id;|// stripped by instance-manager to avoid msg/rs coupling|g\' {shlex.quote(shared)} || true; '
+        f'grep -q "let msgId = textBlock.textSignature;" {shlex.quote(shared)} '
+        f'&& sed -i \'s|let msgId = textBlock.textSignature;|let msgId = undefined; // stripped by instance-manager to avoid msg/rs coupling|g\' {shlex.quote(shared)} || true; '
+        f'grep -q "if (!msgId)" {shlex.quote(shared)} '
+        f'&& sed -i \'s|if (!msgId)|if (false \\&\\& !msgId)|g\' {shlex.quote(shared)} || true; '
+        f'grep -q "else if (msgId.length > 64)" {shlex.quote(shared)} '
+        f'&& sed -i \'s|else if (msgId.length > 64)|else if (msgId \\&\\& msgId.length > 64)|g\' {shlex.quote(shared)} || true; '
+        "fi; "
+        "exec node openclaw.mjs gateway --allow-unconfigured"
+    )
+    return ["sh", "-lc", script]
+
+
 def ensure_user_runtime(identity, users_root, gateway_token=""):
     base = os.path.join(users_root, identity)
     data_dir = os.path.join(base, "data")
@@ -1087,6 +1137,8 @@ def _build_container_spec(container, identity, artifacts):
     }
     if cmd_value:
         spec["Cmd"] = shlex.split(cmd_value)
+    elif _should_force_openai_responses_store():
+        spec["Cmd"] = _build_default_startup_cmd()
     return spec
 
 
