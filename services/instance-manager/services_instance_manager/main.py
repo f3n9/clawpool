@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import http.client
+import ipaddress
 import os
 from pathlib import Path
 import re
@@ -237,6 +238,20 @@ def extract_identity(headers):
     )
     user_sub = headers.get("X-User-Sub")
     return employee_id, user_sub
+
+
+def should_allow_loopback_query_identity(client_address, header_identity, header_sub):
+    if header_identity or header_sub:
+        return False
+    if not client_address:
+        return False
+    host = client_address[0] if isinstance(client_address, (tuple, list)) else str(client_address)
+    if not isinstance(host, str) or not host.strip():
+        return False
+    try:
+        return ipaddress.ip_address(host.strip()).is_loopback
+    except ValueError:
+        return False
 
 
 def normalize_identity(identity):
@@ -1597,8 +1612,11 @@ class Handler(BaseHTTPRequestHandler):
         query = query or {}
         request_id = self.headers.get("X-Request-Id") or self.headers.get("X-Amzn-Trace-Id")
         header_identity, header_sub = extract_identity(self.headers)
-        employee_id = query.get("employee_id", [None])[0] or header_identity
-        user_sub = query.get("user_sub", [None])[0] or header_sub
+        employee_id = header_identity
+        user_sub = header_sub
+        if should_allow_loopback_query_identity(self.client_address, header_identity, header_sub):
+            employee_id = query.get("employee_id", [None])[0] or header_identity
+            user_sub = query.get("user_sub", [None])[0] or header_sub
         raw_identity = employee_id or user_sub
         identity = normalize_identity(raw_identity)
         allowed_domains = split_csv_values(os.getenv("OPENCLAW_ALLOWED_EMAIL_DOMAINS", ""))

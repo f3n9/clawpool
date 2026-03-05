@@ -23,6 +23,7 @@ from services_instance_manager.main import (
     is_websocket_upgrade,
     is_identity_allowed,
     normalize_identity,
+    should_allow_loopback_query_identity,
     split_csv_values,
 )
 
@@ -151,6 +152,20 @@ class JITProvisionTests(unittest.TestCase):
         employee_id, user_sub = extract_identity(headers)
         self.assertEqual(employee_id, "fyue@yinxiang.com")
         self.assertEqual(user_sub, "32f0a35b-a6a8-4c34-936c-c48d9f11889e")
+
+    def test_loopback_query_identity_override_only_without_auth_headers(self):
+        self.assertTrue(
+            should_allow_loopback_query_identity(("127.0.0.1", 12345), None, None)
+        )
+        self.assertTrue(
+            should_allow_loopback_query_identity(("::1", 12345), None, None)
+        )
+        self.assertFalse(
+            should_allow_loopback_query_identity(("10.0.0.8", 12345), None, None)
+        )
+        self.assertFalse(
+            should_allow_loopback_query_identity(("127.0.0.1", 12345), "u1001", None)
+        )
 
     def test_detect_websocket_upgrade_headers(self):
         self.assertTrue(
