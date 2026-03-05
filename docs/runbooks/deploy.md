@@ -19,7 +19,7 @@ Use `OPENCLAW_ALLOWED_EMAIL_DOMAINS` and/or `OPENCLAW_ALLOWED_GROUPS` to restric
 - This value is seeded into each user's secret space during provisioning.
 
 ## OpenAI model policy
-- Set `OPENCLAW_ALLOWED_MODELS` to approved models only (recommended: `gpt-5.2,gpt-5.3-codex,gpt-5.2-chat`).
+- Set `OPENCLAW_ALLOWED_MODELS` to approved models only (recommended: `gpt-5.2,gpt-5.3-codex,gpt-5.3-chat`).
 - Set `OPENCLAW_DEFAULT_OPENAI_MODEL` and ensure it is included in `OPENCLAW_ALLOWED_MODELS`.
 - Provisioning fails fast when default model is outside the whitelist.
 

@@ -5,8 +5,8 @@ ROOT_DIR="${ROOT_DIR:-/srv/openclaw/users}"
 CSV_FILE="${1:-infra/users.csv}"
 DEFAULT_KEY="${OPENCLAW_DEFAULT_OPENAI_KEY:-}"
 DEFAULT_ENDPOINT="${OPENCLAW_DEFAULT_OPENAI_ENDPOINT:-https://api.openai.com/v1}"
-ALLOWED_MODELS="${OPENCLAW_ALLOWED_MODELS:-gpt-5.2,gpt-5.3-codex,gpt-5.2-chat}"
-DEFAULT_MODEL="${OPENCLAW_DEFAULT_OPENAI_MODEL:-gpt-5.2-chat}"
+ALLOWED_MODELS="${OPENCLAW_ALLOWED_MODELS:-gpt-5.2,gpt-5.3-codex,gpt-5.3-chat}"
+DEFAULT_MODEL="${OPENCLAW_DEFAULT_OPENAI_MODEL:-gpt-5.3-chat}"
 
 [[ -f "$CSV_FILE" ]] || { echo "missing users csv: $CSV_FILE"; exit 1; }
 [[ -n "$DEFAULT_KEY" ]] || { echo "OPENCLAW_DEFAULT_OPENAI_KEY is required"; exit 1; }

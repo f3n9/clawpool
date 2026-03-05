@@ -844,7 +844,10 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
 
     # Ensure the default agent model is OpenAI-based so users don't fall back to image defaults
     # such as anthropic/claude-opus-* when no anthropic auth is configured.
-    desired_model = os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", "gpt-5.2").strip() or "gpt-5.2"
+    desired_model = (
+        os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", "gpt-5.3-chat").strip()
+        or "gpt-5.3-chat"
+    )
     if "/" not in desired_model:
         desired_model = f"openai/{desired_model}"
     allowed_models = split_csv_values(os.getenv("OPENCLAW_ALLOWED_MODELS", ""))
@@ -878,6 +881,15 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
     if not isinstance(models_cfg, dict):
         models_cfg = {}
         defaults["models"] = models_cfg
+    allowed_openai_refs = {m for m in allowed_models if isinstance(m, str) and m.startswith("openai/")}
+    if allowed_openai_refs:
+        stale_refs = [
+            ref
+            for ref in list(models_cfg.keys())
+            if isinstance(ref, str) and ref.startswith("openai/") and ref not in allowed_openai_refs
+        ]
+        for ref in stale_refs:
+            models_cfg.pop(ref, None)
     if isinstance(primary, str) and primary and primary not in models_cfg:
         models_cfg[primary] = {}
 
@@ -1166,7 +1178,7 @@ def ensure_container_exists(docker, identity, container):
         users_root=users_root,
         default_key=os.getenv("OPENCLAW_DEFAULT_OPENAI_KEY", "").strip(),
         default_endpoint=os.getenv("OPENCLAW_DEFAULT_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
-        default_model=os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", "gpt-5.2"),
+        default_model=os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", "gpt-5.3-chat"),
         gateway_token=gateway_token,
     )
     spec = _build_container_spec(container=container, identity=identity, artifacts=artifacts)

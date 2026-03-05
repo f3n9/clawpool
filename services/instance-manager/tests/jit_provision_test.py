@@ -382,10 +382,10 @@ class JITProvisionTests(unittest.TestCase):
             self.assertNotIn("emailHeader", trusted_proxy)
             self.assertEqual(
                 cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary"),
-                "openai/gpt-5.2",
+                "openai/gpt-5.3-chat",
             )
             self.assertEqual(
-                cfg.get("agents", {}).get("defaults", {}).get("models", {}).get("openai/gpt-5.2", {}).get(
+                cfg.get("agents", {}).get("defaults", {}).get("models", {}).get("openai/gpt-5.3-chat", {}).get(
                     "params", {}
                 ).get("transport"),
                 "sse",
@@ -476,6 +476,48 @@ class JITProvisionTests(unittest.TestCase):
                 "sse",
             )
 
+    def test_prunes_legacy_openai_models_not_in_allowed_list(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1001")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_MODEL": "gpt-5.3-chat",
+                "OPENCLAW_ALLOWED_MODELS": "gpt-5.2,gpt-5.3-codex,gpt-5.3-chat",
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1001/runtime", exist_ok=True)
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "agents": {
+                            "defaults": {
+                                "model": {"primary": "openai/gpt-5.2-chat"},
+                                "models": {
+                                    "openai/gpt-5.2-chat": {},
+                                    "openai/gpt-5.2": {},
+                                },
+                            }
+                        }
+                    },
+                    f,
+                )
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "existing")
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertEqual(
+                cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary"),
+                "openai/gpt-5.3-chat",
+            )
+            models = cfg.get("agents", {}).get("defaults", {}).get("models", {})
+            self.assertNotIn("openai/gpt-5.2-chat", models)
+            self.assertIn("openai/gpt-5.2", models)
+            self.assertIn("openai/gpt-5.3-chat", models)
+
     def test_defaults_to_openai_responses_even_with_chat_or_kimi_models(self):
         docker = FakeDocker()
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
@@ -484,7 +526,7 @@ class JITProvisionTests(unittest.TestCase):
                 "OPENCLAW_USERS_ROOT": tmpdir,
                 "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
                 "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
-                "OPENCLAW_ALLOWED_MODELS": "gpt-5.2,gpt-5.2-chat,Kimi-K2.5",
+                "OPENCLAW_ALLOWED_MODELS": "gpt-5.2,gpt-5.3-chat,Kimi-K2.5",
                 "OPENCLAW_DEFAULT_OPENAI_MODEL": "Kimi-K2.5",
                 "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
                 "OPENCLAW_IMAGE_TAG": "1.0.0",
@@ -499,8 +541,34 @@ class JITProvisionTests(unittest.TestCase):
             self.assertEqual(provider.get("api"), "openai-responses")
             reasoning_map = {m.get("id"): m.get("reasoning") for m in provider.get("models", [])}
             self.assertEqual(reasoning_map.get("gpt-5.2"), True)
-            self.assertEqual(reasoning_map.get("gpt-5.2-chat"), False)
+            self.assertEqual(reasoning_map.get("gpt-5.3-chat"), False)
             self.assertEqual(reasoning_map.get("Kimi-K2.5"), False)
+
+    def test_default_model_falls_back_to_gpt_5_3_chat_when_env_missing(self):
+        docker = FakeDocker()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+            },
+            clear=False,
+        ):
+            os.environ.pop("OPENCLAW_DEFAULT_OPENAI_MODEL", None)
+            os.environ.pop("OPENCLAW_ALLOWED_MODELS", None)
+            status = ensure_container_exists(docker, identity="u1009", container="openclaw-u1009")
+            self.assertEqual(status, "created")
+            with open(f"{tmpdir}/u1009/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertEqual(
+                cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary"),
+                "openai/gpt-5.3-chat",
+            )
+            provider_models = cfg.get("models", {}).get("providers", {}).get("openai", {}).get("models", [])
+            self.assertEqual(provider_models[0].get("id"), "gpt-5.3-chat")
 
     def test_honors_openai_api_override(self):
         docker = FakeDocker()
@@ -510,7 +578,7 @@ class JITProvisionTests(unittest.TestCase):
                 "OPENCLAW_USERS_ROOT": tmpdir,
                 "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
                 "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
-                "OPENCLAW_ALLOWED_MODELS": "gpt-5.2,gpt-5.2-chat,Kimi-K2.5",
+                "OPENCLAW_ALLOWED_MODELS": "gpt-5.2,gpt-5.3-chat,Kimi-K2.5",
                 "OPENCLAW_DEFAULT_OPENAI_MODEL": "gpt-5.2",
                 "OPENCLAW_OPENAI_API": "openai-completions",
                 "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
