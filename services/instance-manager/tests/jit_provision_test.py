@@ -7,6 +7,9 @@ import json
 from services_instance_manager.main import (
     DockerAPIError,
     _inject_trusted_proxy_user_header_if_needed,
+    is_browser_navigation_request,
+    is_retryable_upstream_error,
+    normalize_next_path,
     _write_last_active_marker,
     ensure_container_exists,
     extract_identity,
@@ -37,6 +40,22 @@ class FakeDocker:
 class JITProvisionTests(unittest.TestCase):
     def test_split_csv_values(self):
         self.assertEqual(split_csv_values("a,b, c"), ["a", "b", "c"])
+
+    def test_is_browser_navigation_request(self):
+        self.assertTrue(is_browser_navigation_request("GET", {"Accept": "text/html,application/xhtml+xml"}))
+        self.assertFalse(is_browser_navigation_request("POST", {"Accept": "text/html"}))
+        self.assertFalse(is_browser_navigation_request("GET", {"Accept": "application/json"}))
+
+    def test_is_retryable_upstream_error(self):
+        self.assertTrue(is_retryable_upstream_error(ConnectionRefusedError(111, "Connection refused")))
+        self.assertTrue(is_retryable_upstream_error(RuntimeError("[Errno 111] Connection refused")))
+        self.assertFalse(is_retryable_upstream_error(RuntimeError("forbidden")))
+
+    def test_normalize_next_path(self):
+        self.assertEqual(normalize_next_path(""), "/")
+        self.assertEqual(normalize_next_path("channels?x=1"), "/")
+        self.assertEqual(normalize_next_path("/channels?x=1"), "/channels?x=1")
+        self.assertEqual(normalize_next_path("/__openclaw__/bootstrap-status"), "/")
 
     def test_normalize_identity_for_email(self):
         self.assertEqual(normalize_identity("fyue@yinxiang.com"), "fyue-yinxiang.com")
@@ -133,6 +152,7 @@ class JITProvisionTests(unittest.TestCase):
                 ["https://claw.hatch.yinxiang.com"],
             )
             self.assertEqual(cfg.get("gateway", {}).get("auth", {}).get("mode"), "trusted-proxy")
+            self.assertTrue(cfg.get("gateway", {}).get("auth", {}).get("token"))
             self.assertEqual(
                 cfg.get("gateway", {}).get("auth", {}).get("trustedProxy", {}).get("userHeader"),
                 "host",
@@ -176,6 +196,9 @@ class JITProvisionTests(unittest.TestCase):
             _, spec = docker.created[0]
             binds = spec.get("HostConfig", {}).get("Binds", [])
             self.assertTrue(any(b.endswith(":/home/node/.openclaw") for b in binds))
+            env_entries = spec.get("Env", [])
+            self.assertTrue(any(e.startswith("OPENCLAW_GATEWAY_TOKEN=") for e in env_entries))
+            self.assertTrue(any(e.startswith("OPENCLAW_GATEWAY_AUTH_TOKEN=") for e in env_entries))
 
     def test_repairs_legacy_trusted_proxy_config(self):
         docker = FakeDocker()
@@ -262,6 +285,7 @@ class JITProvisionTests(unittest.TestCase):
             with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             trusted_proxy = cfg.get("gateway", {}).get("auth", {}).get("trustedProxy", {})
+            self.assertTrue(cfg.get("gateway", {}).get("auth", {}).get("token"))
             self.assertEqual(trusted_proxy.get("userHeader"), "host")
             self.assertNotIn("emailHeader", trusted_proxy)
             self.assertEqual(
@@ -470,6 +494,61 @@ class JITProvisionTests(unittest.TestCase):
                     required,
                     paired.get("dev-1", {}).get("tokens", {}).get("operator", {}).get("scopes", []),
                 )
+            self.assertEqual(pending, {})
+
+    def test_promotes_pending_pairing_request_when_paired_missing(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1001")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1001/runtime/identity", exist_ok=True)
+            os.makedirs(f"{tmpdir}/u1001/runtime/devices", exist_ok=True)
+            with open(f"{tmpdir}/u1001/runtime/identity/device.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "version": 1,
+                        "deviceId": "dev-2",
+                        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\\nabc\\n-----END PUBLIC KEY-----\\n",
+                    },
+                    f,
+                )
+            with open(f"{tmpdir}/u1001/runtime/devices/paired.json", "w", encoding="utf-8") as f:
+                json.dump({}, f)
+            with open(f"{tmpdir}/u1001/runtime/devices/pending.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "req-1": {
+                            "requestId": "req-1",
+                            "deviceId": "dev-2",
+                            "publicKey": "pk-2",
+                            "platform": "linux",
+                            "clientId": "cli",
+                            "clientMode": "probe",
+                            "role": "operator",
+                            "scopes": ["operator.read"],
+                            "ts": 123,
+                        }
+                    },
+                    f,
+                )
+
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "existing")
+
+            with open(f"{tmpdir}/u1001/runtime/devices/paired.json", "r", encoding="utf-8") as f:
+                paired = json.load(f)
+            with open(f"{tmpdir}/u1001/runtime/devices/pending.json", "r", encoding="utf-8") as f:
+                pending = json.load(f)
+
+            self.assertIn("dev-2", paired)
+            self.assertEqual(paired.get("dev-2", {}).get("role"), "operator")
+            self.assertIn("operator.admin", paired.get("dev-2", {}).get("scopes", []))
             self.assertEqual(pending, {})
 
     def test_fails_when_default_key_missing_for_jit(self):

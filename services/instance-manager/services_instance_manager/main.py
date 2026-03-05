@@ -3,6 +3,7 @@ import json
 import http.client
 import os
 import re
+import secrets
 import select
 import shlex
 import socket
@@ -93,6 +94,29 @@ class DockerAPIClient:
     def create(self, name, body):
         return self.transport.request("POST", f"/containers/create?name={name}", body=body)
 
+    def exec_run(self, name, cmd, user="node", timeout_seconds=20):
+        payload = {
+            "AttachStdout": False,
+            "AttachStderr": False,
+            "Tty": False,
+            "Cmd": cmd,
+            "User": user,
+        }
+        created = self.transport.request("POST", f"/containers/{name}/exec", body=payload)
+        exec_id = created.get("Id") if isinstance(created, dict) else None
+        if not exec_id:
+            return None
+        self.transport.request("POST", f"/exec/{exec_id}/start", body={"Detach": True, "Tty": False})
+        deadline = time.time() + max(1, int(timeout_seconds))
+        while time.time() < deadline:
+            info = self.transport.request("GET", f"/exec/{exec_id}/json")
+            if not isinstance(info, dict):
+                return None
+            if not info.get("Running", False):
+                return info.get("ExitCode")
+            time.sleep(0.2)
+        return None
+
 
 class DockerClient:
     """In-memory fallback for tests and environments without Docker socket."""
@@ -112,6 +136,11 @@ class DockerClient:
     def create(self, name, body):
         self._state[name] = False
         return {"Id": name}
+
+    def exec_run(self, name, cmd, user="node", timeout_seconds=20):
+        if name not in self._state:
+            raise DockerAPIError(404, "Not Found", f"/containers/{name}/exec")
+        return 0
 
 
 def resolve_container_name(employee_id, user_sub, mapping):
@@ -184,6 +213,65 @@ def is_websocket_upgrade(headers):
     if upgrade == "websocket" and "upgrade" in connection:
         return True
     return bool(ws_key and upgrade == "websocket")
+
+
+def is_browser_navigation_request(method, headers):
+    if method != "GET":
+        return False
+    accept = (headers.get("Accept") or "").strip().lower()
+    return "text/html" in accept
+
+
+def is_retryable_upstream_error(exc):
+    if isinstance(exc, ConnectionRefusedError):
+        return True
+    text = str(exc).strip().lower()
+    if not text:
+        return False
+    markers = (
+        "connection refused",
+        "[errno 111]",
+        "failed to establish a new connection",
+        "upstream closed before websocket headers",
+    )
+    return any(marker in text for marker in markers)
+
+
+def normalize_next_path(raw):
+    value = (raw or "").strip()
+    if not value:
+        return "/"
+    parsed = urlparse(value)
+    path = parsed.path or "/"
+    query = parsed.query
+    if not path.startswith("/"):
+        path = "/"
+        query = ""
+    if path == "/__openclaw__/bootstrap-status":
+        path = "/"
+        query = ""
+    if query:
+        return f"{path}?{query}"
+    return path
+
+
+def is_upstream_ready(container):
+    upstream_port = int(os.getenv("OPENCLAW_INSTANCE_PORT", "18789"))
+    conn = None
+    try:
+        conn = http.client.HTTPConnection(container, upstream_port, timeout=3)
+        conn.request("GET", "/__openclaw__/control-ui-config.json")
+        resp = conn.getresponse()
+        resp.read()
+        return 200 <= resp.status < 500
+    except Exception:
+        return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def extract_groups(headers):
@@ -292,6 +380,35 @@ def _write_last_active_marker(identity, users_root):
     _safe_chown(marker_path, container_uid, container_gid)
 
 
+def _warm_local_pairing(docker, container):
+    # Prewarm local device pairing so container-local CLI probes (openclaw status)
+    # don't get stuck on "pairing required" for newly created/restarted instances.
+    exec_run = getattr(docker, "exec_run", None)
+    if not callable(exec_run):
+        return
+    cmd = [
+        "sh",
+        "-lc",
+        "openclaw status >/dev/null 2>&1 || true; openclaw devices approve --latest >/dev/null 2>&1 || true",
+    ]
+    timeout_seconds = int(os.getenv("OPENCLAW_LOCAL_PAIRING_WARMUP_TIMEOUT_SECONDS", "20"))
+    try:
+        exec_run(container, cmd, user="node", timeout_seconds=timeout_seconds)
+    except Exception as exc:
+        print(
+            json.dumps(
+                {
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "event": "local_pairing_warmup_error",
+                    "container": container,
+                    "error": str(exc),
+                },
+                ensure_ascii=True,
+            ),
+            flush=True,
+        )
+
+
 def _read_json_object(path):
     if not os.path.exists(path):
         return {}
@@ -353,6 +470,7 @@ def _repair_local_device_pairing(runtime_dir, uid, gid):
     scopes = _resolve_operator_scopes()
     now_ms = int(time.time() * 1000)
 
+    paired_changed = False
     paired_entry = paired.get(device_id)
     if not isinstance(paired_entry, dict):
         latest_pending = None
@@ -382,8 +500,8 @@ def _repair_local_device_pairing(runtime_dir, uid, gid):
                 "approvedAtMs": now_ms,
             }
             paired[device_id] = paired_entry
+            paired_changed = True
 
-    paired_changed = False
     if isinstance(paired_entry, dict):
         roles = _merge_unique_str_values([*(paired_entry.get("roles") or []), "operator"])
         if paired_entry.get("roles") != roles:
@@ -441,7 +559,7 @@ def _repair_local_device_pairing(runtime_dir, uid, gid):
         _safe_chown(pending_path, uid, gid)
 
 
-def _ensure_runtime_config(runtime_dir, uid, gid):
+def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
     config_path = os.path.join(runtime_dir, "openclaw.json")
     cfg = {}
     if os.path.exists(config_path):
@@ -485,7 +603,7 @@ def _ensure_runtime_config(runtime_dir, uid, gid):
     auth_mode = os.getenv("OPENCLAW_GATEWAY_AUTH_MODE", "trusted-proxy").strip() or "trusted-proxy"
     if not isinstance(auth.get("mode"), str) or auth.get("mode") != auth_mode:
         auth["mode"] = auth_mode
-    token = os.getenv("OPENCLAW_GATEWAY_AUTH_TOKEN", "").strip()
+    token = (gateway_token or os.getenv("OPENCLAW_GATEWAY_AUTH_TOKEN", "").strip()).strip()
     if token and not auth.get("token"):
         auth["token"] = token
 
@@ -645,7 +763,30 @@ def _ensure_runtime_config(runtime_dir, uid, gid):
     _safe_chown(config_path, uid, gid)
 
 
-def ensure_user_runtime(identity, users_root):
+def _ensure_user_gateway_token(identity, users_root):
+    static_token = os.getenv("OPENCLAW_GATEWAY_AUTH_TOKEN", "").strip()
+    if static_token:
+        return static_token
+    base = os.path.join(users_root, identity)
+    secrets_dir = os.path.join(base, "secrets")
+    container_uid = int(os.getenv("OPENCLAW_CONTAINER_UID", "1000"))
+    container_gid = int(os.getenv("OPENCLAW_CONTAINER_GID", "1000"))
+    _safe_mkdir(secrets_dir, 0o700)
+    _safe_chown(secrets_dir, container_uid, container_gid)
+    token_file = os.path.join(secrets_dir, "gateway_auth_token")
+    token = ""
+    if os.path.exists(token_file):
+        token = _read_secret_file(token_file).strip()
+    if not token:
+        token = secrets.token_urlsafe(32)
+        _write_if_missing(token_file, token, 0o600, container_uid, container_gid)
+    else:
+        os.chmod(token_file, 0o600)
+        _safe_chown(token_file, container_uid, container_gid)
+    return token
+
+
+def ensure_user_runtime(identity, users_root, gateway_token=""):
     base = os.path.join(users_root, identity)
     data_dir = os.path.join(base, "data")
     config_dir = os.path.join(base, "config")
@@ -660,7 +801,7 @@ def ensure_user_runtime(identity, users_root):
     _safe_chown(data_dir, container_uid, container_gid)
     _safe_chown(config_dir, container_uid, container_gid)
     _safe_chown(runtime_dir, container_uid, container_gid)
-    _ensure_runtime_config(runtime_dir, container_uid, container_gid)
+    _ensure_runtime_config(runtime_dir, container_uid, container_gid, gateway_token=gateway_token)
     _repair_local_device_pairing(runtime_dir, container_uid, container_gid)
     return {
         "data_dir": data_dir,
@@ -669,8 +810,11 @@ def ensure_user_runtime(identity, users_root):
     }
 
 
-def ensure_user_artifacts(identity, users_root, default_key, default_endpoint, default_model):
-    runtime = ensure_user_runtime(identity, users_root)
+def ensure_user_artifacts(
+    identity, users_root, default_key, default_endpoint, default_model, gateway_token=""
+):
+    resolved_gateway_token = (gateway_token or _ensure_user_gateway_token(identity, users_root)).strip()
+    runtime = ensure_user_runtime(identity, users_root, gateway_token=resolved_gateway_token)
     base = os.path.join(users_root, identity)
     secrets_dir = os.path.join(base, "secrets")
     container_uid = int(os.getenv("OPENCLAW_CONTAINER_UID", "1000"))
@@ -708,6 +852,7 @@ def ensure_user_artifacts(identity, users_root, default_key, default_endpoint, d
         "api_key_file": os.path.join(secrets_dir, "openai_api_key"),
         "endpoint_file": os.path.join(secrets_dir, "openai_endpoint"),
         "model_file": os.path.join(secrets_dir, "openai_model"),
+        "gateway_token": resolved_gateway_token,
     }
 
 
@@ -735,6 +880,10 @@ def _build_container_spec(container, identity, artifacts):
         f"OPENCLAW_OPENAI_ENDPOINT={endpoint}",
         f"OPENCLAW_OPENAI_MODEL={model}",
     ]
+    gateway_token = (artifacts.get("gateway_token") or "").strip()
+    if gateway_token:
+        env.append(f"OPENCLAW_GATEWAY_TOKEN={gateway_token}")
+        env.append(f"OPENCLAW_GATEWAY_AUTH_TOKEN={gateway_token}")
     spec = {
         "Image": full_image,
         "Env": env,
@@ -761,9 +910,16 @@ def _build_container_spec(container, identity, artifacts):
 
 
 def ensure_container_exists(docker, identity, container):
+    normalized_identity = normalize_identity(identity)
+    users_root = os.getenv("OPENCLAW_USERS_ROOT", "/srv/openclaw/users")
+    gateway_token = _ensure_user_gateway_token(
+        identity=normalized_identity,
+        users_root=users_root,
+    )
     ensure_user_runtime(
-        identity=normalize_identity(identity),
-        users_root=os.getenv("OPENCLAW_USERS_ROOT", "/srv/openclaw/users"),
+        identity=normalized_identity,
+        users_root=users_root,
+        gateway_token=gateway_token,
     )
     try:
         docker.inspect(container)
@@ -773,11 +929,12 @@ def ensure_container_exists(docker, identity, container):
             raise
 
     artifacts = ensure_user_artifacts(
-        identity=normalize_identity(identity),
-        users_root=os.getenv("OPENCLAW_USERS_ROOT", "/srv/openclaw/users"),
+        identity=normalized_identity,
+        users_root=users_root,
         default_key=os.getenv("OPENCLAW_DEFAULT_OPENAI_KEY", "").strip(),
         default_endpoint=os.getenv("OPENCLAW_DEFAULT_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
         default_model=os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", "gpt-5.2"),
+        gateway_token=gateway_token,
     )
     spec = _build_container_spec(container=container, identity=identity, artifacts=artifacts)
     try:
@@ -876,6 +1033,139 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(payload).encode("utf-8"))
 
+    def _html(self, status, body):
+        payload = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _bootstrap_wait_page(self, next_path, detail):
+        safe_next = json.dumps(normalize_next_path(next_path))
+        safe_detail = json.dumps((detail or "").strip())
+        html = f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:," />
+    <title>OpenClaw Initializing</title>
+    <style>
+      body {{
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0f172a;
+        color: #e2e8f0;
+      }}
+      .card {{
+        width: min(560px, 92vw);
+        border: 1px solid #334155;
+        border-radius: 12px;
+        padding: 20px;
+        background: #111827;
+        box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+      }}
+      .title {{ font-size: 18px; font-weight: 600; margin-bottom: 8px; }}
+      .desc {{ opacity: 0.9; margin-bottom: 12px; }}
+      .meta {{ font-size: 12px; opacity: 0.75; min-height: 18px; }}
+      .spinner {{
+        width: 18px; height: 18px; border-radius: 50%;
+        border: 2px solid #334155; border-top-color: #22c55e;
+        display: inline-block; vertical-align: -3px; margin-right: 8px;
+        animation: spin 0.9s linear infinite;
+      }}
+      @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="title"><span class="spinner"></span>OpenClaw instance is initializing</div>
+      <div class="desc">Your dedicated instance is waking up. This page will redirect automatically once ready.</div>
+      <div id="status" class="meta">Checking status...</div>
+    </div>
+    <script>
+      const nextPath = {safe_next};
+      const initialDetail = {safe_detail};
+      const statusEl = document.getElementById("status");
+      const pollMs = 3000;
+      let timer = null;
+      let retries = 0;
+      async function probe() {{
+        retries += 1;
+        try {{
+          const r = await fetch(`/__openclaw__/bootstrap-status?next=${{encodeURIComponent(nextPath)}}&_=${{Date.now()}}`, {{
+            credentials: "include",
+            cache: "no-store",
+            redirect: "follow",
+          }});
+          if (r.redirected && r.url && r.url.includes("/oauth2/")) {{
+            statusEl.textContent = "Authentication expired. Redirecting to sign-in...";
+            window.location.assign(r.url);
+            return;
+          }}
+          if (!r.ok) {{
+            throw new Error(`status ${{r.status}}`);
+          }}
+          const payload = await r.json();
+          if (payload.ready) {{
+            window.location.replace(payload.next || nextPath || "/");
+            return;
+          }}
+          statusEl.textContent = payload.message || initialDetail || "Instance is still starting...";
+        }} catch (err) {{
+          statusEl.textContent = (initialDetail || "Still waking up") + ` Retry #${{retries}}...`;
+        }}
+        timer = window.setTimeout(probe, pollMs);
+      }}
+      probe();
+      window.addEventListener("beforeunload", () => timer && clearTimeout(timer));
+    </script>
+  </body>
+</html>"""
+        self._html(HTTPStatus.OK, html)
+
+    def _should_use_bootstrap_wait_page(self, parsed_path):
+        if parsed_path in {"/health", "/resolve", "/__openclaw__/bootstrap-status"}:
+            return False
+        if is_websocket_upgrade(self.headers):
+            return False
+        return is_browser_navigation_request(self.command, self.headers)
+
+    def _handle_bootstrap_status(self, parsed):
+        query = parse_qs(parsed.query)
+        next_path = normalize_next_path(query.get("next", ["/"])[0])
+        message = "OpenClaw instance is waking up..."
+        try:
+            container = self._resolve_target_container()
+        except ValueError:
+            self._json(HTTPStatus.OK, {"ready": False, "next": next_path, "message": "Missing identity"})
+            return
+        except PermissionError:
+            self._json(HTTPStatus.OK, {"ready": False, "next": next_path, "message": "Identity not allowed"})
+            return
+        except RuntimeError:
+            self._json(
+                HTTPStatus.OK,
+                {"ready": False, "next": next_path, "message": "Instance startup is throttled, retrying..."},
+            )
+            return
+        except TimeoutError:
+            self._json(
+                HTTPStatus.OK,
+                {"ready": False, "next": next_path, "message": "Instance startup timeout, retrying..."},
+            )
+            return
+
+        ready = is_upstream_ready(container)
+        if ready:
+            message = "Instance is ready, redirecting..."
+        self._json(HTTPStatus.OK, {"ready": ready, "next": next_path, "message": message})
+
     def _resolve_target_container(self, query=None):
         query = query or {}
         request_id = self.headers.get("X-Request-Id") or self.headers.get("X-Amzn-Trace-Id")
@@ -933,6 +1223,8 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         lifecycle = classify_instance_lifecycle(provision_state, startup_state)
+        if provision_state == "created" or startup_state == "started":
+            _warm_local_pairing(DOCKER, container)
         runtime = read_container_runtime_state(DOCKER, container)
         emit_identity_audit(
             "identity_routed",
@@ -1111,22 +1403,42 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"status": "ok"})
             return
 
+        if parsed.path == "/favicon.ico":
+            self.send_response(HTTPStatus.NO_CONTENT)
+            self.send_header("Cache-Control", "public, max-age=86400, immutable")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        if parsed.path == "/__openclaw__/bootstrap-status":
+            self._handle_bootstrap_status(parsed)
+            return
+
         if parsed.path == "/resolve":
             query = parse_qs(parsed.query)
 
             try:
                 container = self._resolve_target_container(query=query)
             except ValueError:
-                self._json(HTTPStatus.UNAUTHORIZED, {"error": "missing identity"})
+                if self._should_use_bootstrap_wait_page(parsed.path):
+                    self._bootstrap_wait_page(self.path, "Waiting for authenticated identity...")
+                else:
+                    self._json(HTTPStatus.UNAUTHORIZED, {"error": "missing identity"})
                 return
             except PermissionError:
                 self._json(HTTPStatus.FORBIDDEN, {"error": "identity not allowed"})
                 return
             except RuntimeError:
-                self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "startup throttled"})
+                if self._should_use_bootstrap_wait_page(parsed.path):
+                    self._bootstrap_wait_page(self.path, "OpenClaw instance is starting...")
+                else:
+                    self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "startup throttled"})
                 return
             except TimeoutError:
-                self._json(HTTPStatus.GATEWAY_TIMEOUT, {"error": "container startup timeout"})
+                if self._should_use_bootstrap_wait_page(parsed.path):
+                    self._bootstrap_wait_page(self.path, "OpenClaw instance startup timed out. Retrying...")
+                else:
+                    self._json(HTTPStatus.GATEWAY_TIMEOUT, {"error": "container startup timeout"})
                 return
             self._json(HTTPStatus.OK, {"container": container, "state": "ready"})
             return
@@ -1134,16 +1446,25 @@ class Handler(BaseHTTPRequestHandler):
         try:
             container = self._resolve_target_container()
         except ValueError:
-            self._json(HTTPStatus.UNAUTHORIZED, {"error": "missing identity"})
+            if self._should_use_bootstrap_wait_page(parsed.path):
+                self._bootstrap_wait_page(self.path, "Waiting for authenticated identity...")
+            else:
+                self._json(HTTPStatus.UNAUTHORIZED, {"error": "missing identity"})
             return
         except PermissionError:
             self._json(HTTPStatus.FORBIDDEN, {"error": "identity not allowed"})
             return
         except RuntimeError:
-            self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "startup throttled"})
+            if self._should_use_bootstrap_wait_page(parsed.path):
+                self._bootstrap_wait_page(self.path, "OpenClaw instance is starting...")
+            else:
+                self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "startup throttled"})
             return
         except TimeoutError:
-            self._json(HTTPStatus.GATEWAY_TIMEOUT, {"error": "container startup timeout"})
+            if self._should_use_bootstrap_wait_page(parsed.path):
+                self._bootstrap_wait_page(self.path, "OpenClaw instance startup timed out. Retrying...")
+            else:
+                self._json(HTTPStatus.GATEWAY_TIMEOUT, {"error": "container startup timeout"})
             return
 
         if not re.match(r"^[a-zA-Z0-9._-]+$", container):
@@ -1153,6 +1474,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._proxy_request(container)
         except Exception as exc:
+            if self._should_use_bootstrap_wait_page(parsed.path) and is_retryable_upstream_error(exc):
+                self._bootstrap_wait_page(self.path, str(exc))
+                return
             self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
 
     def do_POST(self):
