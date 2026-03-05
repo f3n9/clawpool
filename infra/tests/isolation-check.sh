@@ -44,6 +44,6 @@ u1_model=$(cat "$ROOT_DIR/u1001/secrets/openai_model")
 [[ "$u1_key" == "default-test-key" ]] || { echo "FAIL: u1001 key not initialized"; exit 1; }
 [[ "$u2_key" == "default-test-key" ]] || { echo "FAIL: u1002 key not initialized"; exit 1; }
 [[ "$u1_endpoint" == "https://api.openai.com/v1" ]] || { echo "FAIL: u1001 endpoint not initialized"; exit 1; }
-[[ "$u1_model" == "gpt-5.2" ]] || { echo "FAIL: u1001 model not initialized"; exit 1; }
+[[ "$u1_model" == "gpt-5.2-chat" ]] || { echo "FAIL: u1001 model not initialized"; exit 1; }
 
 echo "PASS: isolation baseline directories and secrets are provisioned"
