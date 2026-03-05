@@ -5,6 +5,7 @@
    - `OPENCLAW_HOST` must be host only (no `https://`), e.g. `claw.hatch.yinxiang.com`.
    - Generate `OPENCLAW_OAUTH2_COOKIE_SECRET` as a 32-char random string, e.g.:
      - `tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32`
+   - Keep `infra/traefik/dynamic.yml` router host aligned with `OPENCLAW_HOST`.
 2. If `OPENCLAW_JIT_PROVISION=false`, pre-provision user directories and default secrets.
    - `bash infra/scripts/provision-users.sh infra/users.csv`
    - `bash infra/scripts/provision-user-secrets.sh infra/users.csv`
@@ -18,7 +19,7 @@ Use `OPENCLAW_ALLOWED_EMAIL_DOMAINS` and/or `OPENCLAW_ALLOWED_GROUPS` to restric
 - This value is seeded into each user's secret space during provisioning.
 
 ## OpenAI model policy
-- Set `OPENCLAW_ALLOWED_MODELS` to approved models only (recommended: `gpt-5.2,gpt-5.3-codex`).
+- Set `OPENCLAW_ALLOWED_MODELS` to approved models only (recommended: `gpt-5.2,gpt-5.3-codex,gpt-5.2-chat`).
 - Set `OPENCLAW_DEFAULT_OPENAI_MODEL` and ensure it is included in `OPENCLAW_ALLOWED_MODELS`.
 - Provisioning fails fast when default model is outside the whitelist.
 

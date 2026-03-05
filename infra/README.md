@@ -5,6 +5,7 @@ This directory contains base deployment assets for enterprise OpenClaw.
 ## Quick Start
 
 1. Copy `.env.example` to `.env` and fill real values.
+   - Keep `traefik/dynamic.yml` router host aligned with `OPENCLAW_HOST`.
 2. Verify compose syntax:
    - `docker compose -f infra/docker-compose.base.yml config`
 3. Start baseline services:

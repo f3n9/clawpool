@@ -1,7 +1,8 @@
 http:
   routers:
     openclaw:
-      rule: "Host(`claw.hatch.yinxiang.com`) && PathPrefix(`/`)"
+      # Keep this host in sync with OPENCLAW_HOST in infra/.env.
+      rule: "Host(`openclaw.company.internal`) && PathPrefix(`/`)"
       entryPoints:
         - web
       service: oauth2-proxy
