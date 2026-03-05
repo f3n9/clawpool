@@ -8,6 +8,7 @@ import json
 from services_instance_manager.main import (
     CONSOLE_STATIC_ROOT,
     DockerAPIError,
+    _parse_console_control,
     _inject_trusted_proxy_user_header_if_needed,
     is_browser_navigation_request,
     is_retryable_upstream_error,
@@ -46,6 +47,7 @@ class JITProvisionTests(unittest.TestCase):
     def test_console_static_assets_exist(self):
         self.assertTrue((CONSOLE_STATIC_ROOT / "xterm.js").is_file())
         self.assertTrue((CONSOLE_STATIC_ROOT / "xterm.css").is_file())
+        self.assertTrue((CONSOLE_STATIC_ROOT / "xterm-addon-fit.js").is_file())
 
     def test_split_csv_values(self):
         self.assertEqual(split_csv_values("a,b, c"), ["a", "b", "c"])
@@ -112,6 +114,13 @@ class JITProvisionTests(unittest.TestCase):
             length = struct.unpack("!Q", raw[idx : idx + 8])[0]
             idx += 8
         self.assertEqual(raw[idx : idx + length], b"world")
+
+    def test_parse_console_control_resize(self):
+        ctrl = _parse_console_control(b'{"type":"resize","cols":120,"rows":40}')
+        self.assertEqual(ctrl, {"type": "resize", "cols": 120, "rows": 40})
+        self.assertIsNone(_parse_console_control(b'{"type":"resize","cols":0,"rows":40}'))
+        self.assertIsNone(_parse_console_control(b'{"type":"resize","cols":"x","rows":40}'))
+        self.assertIsNone(_parse_console_control(b'{"type":"noop"}'))
 
     def test_normalize_identity_for_email(self):
         self.assertEqual(normalize_identity("fyue@yinxiang.com"), "fyue-yinxiang.com")

@@ -150,6 +150,11 @@ class DockerAPIClient:
         body = {"Detach": False, "Tty": tty}
         return self.transport.stream("POST", f"/exec/{exec_id}/start", body=body)
 
+    def resize_exec(self, exec_id, cols, rows):
+        width = max(1, int(cols))
+        height = max(1, int(rows))
+        return self.transport.request("POST", f"/exec/{exec_id}/resize?h={height}&w={width}")
+
     def exec_run(self, name, cmd, user="node", timeout_seconds=20):
         payload = {
             "AttachStdout": False,
@@ -205,6 +210,9 @@ class DockerClient:
 
     def start_exec_stream(self, exec_id, tty=True):
         raise RuntimeError("docker stream not available in in-memory docker client")
+
+    def resize_exec(self, exec_id, cols, rows):
+        return None
 
 
 def resolve_container_name(employee_id, user_sub, mapping):
@@ -390,6 +398,29 @@ def _ws_send_frame(sock, payload, opcode=2):
         head.append(127)
         head.extend(struct.pack("!Q", length))
     sock.sendall(bytes(head) + payload)
+
+
+def _parse_console_control(payload):
+    if not payload or len(payload) > 1024:
+        return None
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or data.get("type") != "resize":
+        return None
+    try:
+        cols = int(data.get("cols"))
+        rows = int(data.get("rows"))
+    except (TypeError, ValueError):
+        return None
+    if cols < 1 or rows < 1 or cols > 800 or rows > 1000:
+        return None
+    return {"type": "resize", "cols": cols, "rows": rows}
 
 
 def extract_groups(headers):
@@ -1154,6 +1185,7 @@ CONSOLE_STATIC_ROOT = Path(__file__).resolve().parent / "static" / "console"
 CONSOLE_STATIC_FILES = {
     "xterm.js": "application/javascript; charset=utf-8",
     "xterm.css": "text/css; charset=utf-8",
+    "xterm-addon-fit.js": "application/javascript; charset=utf-8",
 }
 
 
@@ -1318,13 +1350,15 @@ class Handler(BaseHTTPRequestHandler):
   </head>
   <body>
     <div class="banner">OpenClaw Container Console</div>
-    <div class="hint">Ctrl+C to interrupt, Ctrl+L to clear view</div>
+    <div class="hint">Auto-fit enabled | Ctrl+C to interrupt</div>
     <div id="terminal"></div>
     <script src="/console/assets/xterm.js"></script>
+    <script src="/console/assets/xterm-addon-fit.js"></script>
     <script>
-      if (typeof window.Terminal !== "function") {
-        document.body.innerHTML = "<pre style='padding:12px'>[console error] failed to load xterm.js</pre>";
+      if (typeof window.Terminal !== "function" || !window.FitAddon || typeof window.FitAddon.FitAddon !== "function") {
+        document.body.innerHTML = "<pre style='padding:12px'>[console error] failed to load xterm assets</pre>";
       } else {
+        const encoder = new TextEncoder();
         const decoder = new TextDecoder();
         const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
         const ws = new WebSocket(`${wsProto}://${window.location.host}/console/ws`);
@@ -1341,10 +1375,27 @@ class Handler(BaseHTTPRequestHandler):
             selectionBackground: "#1e293b",
           },
         });
+        const fitAddon = new window.FitAddon.FitAddon();
+        term.loadAddon(fitAddon);
         term.open(document.getElementById("terminal"));
         term.focus();
+        fitAddon.fit();
         term.writeln("\\u001b[1;34mOpenClaw Container Console\\u001b[0m");
         term.writeln("\\u001b[90mConnecting...\\u001b[0m");
+
+        let resizeTimer = null;
+        function notifyResize() {
+          if (ws.readyState !== WebSocket.OPEN) return;
+          ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+        }
+        function fitAndNotify() {
+          fitAddon.fit();
+          notifyResize();
+        }
+        function scheduleFit() {
+          if (resizeTimer) window.clearTimeout(resizeTimer);
+          resizeTimer = window.setTimeout(fitAndNotify, 80);
+        }
 
         function writeChunk(data) {
           if (typeof data === "string") {
@@ -1354,21 +1405,32 @@ class Handler(BaseHTTPRequestHandler):
           term.write(decoder.decode(new Uint8Array(data), { stream: true }));
         }
 
-        ws.onopen = () => term.writeln("\\u001b[32m[connected]\\u001b[0m");
+        ws.onopen = () => {
+          term.writeln("\\u001b[32m[connected]\\u001b[0m");
+          fitAndNotify();
+        };
         ws.onclose = () => term.writeln("\\r\\n\\u001b[33m[disconnected]\\u001b[0m");
         ws.onerror = () => term.writeln("\\r\\n\\u001b[31m[console websocket error]\\u001b[0m");
         ws.onmessage = (ev) => writeChunk(ev.data);
         term.onData((data) => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(data);
+          if (ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(data));
         });
         window.addEventListener("paste", (e) => {
           const text = e.clipboardData && e.clipboardData.getData("text");
           if (!text) return;
           e.preventDefault();
-          if (ws.readyState === WebSocket.OPEN) ws.send(text);
+          if (ws.readyState === WebSocket.OPEN) ws.send(encoder.encode(text));
         });
         window.addEventListener("click", () => term.focus());
-        window.addEventListener("resize", () => term.focus());
+        window.addEventListener("resize", () => {
+          term.focus();
+          scheduleFit();
+        });
+        if (typeof window.ResizeObserver === "function") {
+          const containerEl = document.getElementById("terminal");
+          const observer = new ResizeObserver(() => scheduleFit());
+          observer.observe(containerEl);
+        }
       }
     </script>
   </body>
@@ -1402,7 +1464,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not exec_id:
                     raise RuntimeError("missing exec id")
                 sock, prebuffer = DOCKER.start_exec_stream(exec_id, tty=True)
-                return sock, prebuffer, cmd
+                return sock, prebuffer, cmd, exec_id
             except Exception as exc:
                 last_error = exc
         raise RuntimeError(f"failed to open console exec stream: {last_error}")
@@ -1424,8 +1486,9 @@ class Handler(BaseHTTPRequestHandler):
         exec_sock = None
         prebuffer = b""
         cmd = []
+        exec_id = None
         try:
-            exec_sock, prebuffer, cmd = self._open_console_exec_stream(container)
+            exec_sock, prebuffer, cmd, exec_id = self._open_console_exec_stream(container)
             accept = _websocket_accept_key(sec_key)
             self.send_response(HTTPStatus.SWITCHING_PROTOCOLS)
             self.send_header("Upgrade", "websocket")
@@ -1463,6 +1526,14 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         if opcode not in {1, 2}:
                             continue
+                        if opcode == 1:
+                            ctrl = _parse_console_control(payload)
+                            if ctrl and ctrl.get("type") == "resize" and exec_id:
+                                try:
+                                    DOCKER.resize_exec(exec_id, ctrl["cols"], ctrl["rows"])
+                                except Exception:
+                                    pass
+                                continue
                         if payload:
                             exec_sock.sendall(payload)
                     else:
