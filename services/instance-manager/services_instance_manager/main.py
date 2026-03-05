@@ -440,6 +440,16 @@ def _merge_unique_str_values(values):
     return out
 
 
+def _model_supports_reasoning(model_id, openai_api):
+    api = (openai_api or "").strip().lower()
+    if api not in {"openai-responses", "openai-codex-responses"}:
+        return False
+    lowered = (model_id or "").strip().lower()
+    if lowered.startswith("kimi") or "-chat" in lowered:
+        return False
+    return True
+
+
 def _resolve_operator_scopes():
     configured = split_csv_values(
         os.getenv("OPENCLAW_OPERATOR_SCOPES", ",".join(DEFAULT_OPERATOR_SCOPES))
@@ -728,12 +738,14 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
         os.getenv("OPENCLAW_DEFAULT_OPENAI_ENDPOINT", "https://api.openai.com/v1").strip()
         or "https://api.openai.com/v1"
     )
-    openai_provider["api"] = "openai-responses"
+    configured_openai_api = os.getenv("OPENCLAW_OPENAI_API", "").strip()
+    openai_api = configured_openai_api or "openai-responses"
+    openai_provider["api"] = openai_api
     openai_provider["models"] = [
         {
             "id": model_id,
             "name": model_id,
-            "reasoning": True,
+            "reasoning": _model_supports_reasoning(model_id, openai_api),
             "input": ["text", "image"],
             "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
             "contextWindow": 200000,
@@ -755,6 +767,11 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
             model_entry["params"] = params
         params.setdefault("transport", "sse")
         params.setdefault("openaiWsWarmup", False)
+        if not _model_supports_reasoning(model_id, openai_api):
+            # Guard against provider/model combos that reject reasoning controls
+            # (e.g. chat/completions-compatible Kimi and *-chat models).
+            params.pop("reasoningEffort", None)
+            params.pop("reasoningSummary", None)
 
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=True, indent=2)

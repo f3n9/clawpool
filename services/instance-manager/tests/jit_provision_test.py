@@ -384,6 +384,56 @@ class JITProvisionTests(unittest.TestCase):
                 "sse",
             )
 
+    def test_defaults_to_openai_responses_even_with_chat_or_kimi_models(self):
+        docker = FakeDocker()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
+                "OPENCLAW_ALLOWED_MODELS": "gpt-5.2,gpt-5.2-chat,Kimi-K2.5",
+                "OPENCLAW_DEFAULT_OPENAI_MODEL": "Kimi-K2.5",
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+            },
+            clear=False,
+        ):
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "created")
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            provider = cfg.get("models", {}).get("providers", {}).get("openai", {})
+            self.assertEqual(provider.get("api"), "openai-responses")
+            reasoning_map = {m.get("id"): m.get("reasoning") for m in provider.get("models", [])}
+            self.assertEqual(reasoning_map.get("gpt-5.2"), True)
+            self.assertEqual(reasoning_map.get("gpt-5.2-chat"), False)
+            self.assertEqual(reasoning_map.get("Kimi-K2.5"), False)
+
+    def test_honors_openai_api_override(self):
+        docker = FakeDocker()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
+                "OPENCLAW_ALLOWED_MODELS": "gpt-5.2,gpt-5.2-chat,Kimi-K2.5",
+                "OPENCLAW_DEFAULT_OPENAI_MODEL": "gpt-5.2",
+                "OPENCLAW_OPENAI_API": "openai-completions",
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+            },
+            clear=False,
+        ):
+            status = ensure_container_exists(docker, identity="u1002", container="openclaw-u1002")
+            self.assertEqual(status, "created")
+            with open(f"{tmpdir}/u1002/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            provider = cfg.get("models", {}).get("providers", {}).get("openai", {})
+            self.assertEqual(provider.get("api"), "openai-completions")
+            self.assertTrue(all(m.get("reasoning") is False for m in provider.get("models", [])))
+
     def test_channel_plugins_default_enabled_without_overriding_explicit_false(self):
         docker = FakeDocker()
         docker.existing.add("openclaw-u1001")

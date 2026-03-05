@@ -27,7 +27,8 @@ This directory contains base deployment assets for enterprise OpenClaw.
 - `OPENCLAW_DEFAULT_CHANNEL_PLUGINS` (recommended: `telegram,googlechat`)
 - `OPENCLAW_DEFAULT_OPENAI_KEY`
 - `OPENCLAW_DEFAULT_OPENAI_ENDPOINT`
-- `OPENCLAW_ALLOWED_MODELS` (must include only approved models, e.g. `gpt-5.2,gpt-5.3-codex`)
+- `OPENCLAW_OPENAI_API` (optional override: `openai-responses` or `openai-completions`)
+- `OPENCLAW_ALLOWED_MODELS` (must include only approved models, e.g. `gpt-5.2,gpt-5.3-codex,gpt-5.2-chat`)
 - `OPENCLAW_DEFAULT_OPENAI_MODEL` (must be one of `OPENCLAW_ALLOWED_MODELS`)
 - `OPENCLAW_ALLOWED_EMAIL_DOMAINS`, `OPENCLAW_ALLOWED_GROUPS` (optional access controls for JIT provisioning)
 - `OPENCLAW_IDLE_MINUTES`
