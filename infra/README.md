@@ -25,7 +25,7 @@ This directory contains base deployment assets for enterprise OpenClaw.
 - `OPENCLAW_GATEWAY_AUTH_MODE` (recommended: `trusted-proxy`)
 - `OPENCLAW_GATEWAY_TRUSTED_PROXY_USER_HEADER` (recommended: `host` to keep local gateway calls authorized)
 - `OPENCLAW_GATEWAY_TRUSTED_PROXIES` (recommended: `127.0.0.1/32,172.16.0.0/12`)
-- `OPENCLAW_DEFAULT_CHANNEL_PLUGINS` (recommended: `telegram,googlechat`)
+- `OPENCLAW_DEFAULT_CHANNEL_PLUGINS` (recommended: `telegram,wecom`)
 - `OPENCLAW_FORCE_RESPONSES_STORE` (recommended: `true` when using OpenAI-compatible Responses proxy endpoints to avoid multi-turn item-id 400 errors)
 - `OPENCLAW_DEFAULT_OPENAI_KEY`
 - `OPENCLAW_DEFAULT_OPENAI_ENDPOINT`

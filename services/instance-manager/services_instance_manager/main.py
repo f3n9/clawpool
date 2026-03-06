@@ -813,7 +813,7 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
         entries = {}
         plugins["entries"] = entries
     default_channel_plugins = split_csv_values(
-        os.getenv("OPENCLAW_DEFAULT_CHANNEL_PLUGINS", "telegram,googlechat")
+        os.getenv("OPENCLAW_DEFAULT_CHANNEL_PLUGINS", "telegram,wecom")
     )
     for plugin_id in default_channel_plugins:
         if not re.match(r"^[a-z0-9._-]+$", plugin_id):
@@ -1007,7 +1007,18 @@ def _should_force_openai_responses_store():
 def _build_default_startup_cmd():
     target = "/app/node_modules/@mariozechner/pi-ai/dist/providers/openai-responses.js"
     shared = "/app/node_modules/@mariozechner/pi-ai/dist/providers/openai-responses-shared.js"
+    bundled_ext = "/opt/openclaw/extensions"
+    runtime_ext = "/home/node/.openclaw/extensions"
     script = (
+        f'if [ -d {shlex.quote(bundled_ext)} ]; then '
+        f'mkdir -p {shlex.quote(runtime_ext)}; '
+        f'for plugin_dir in {shlex.quote(bundled_ext)}/*; do '
+        '[ -d "$plugin_dir" ] || continue; '
+        'plugin_name="$(basename "$plugin_dir")"; '
+        f'target_dir={shlex.quote(runtime_ext)}/"$plugin_name"; '
+        'if [ ! -d "$target_dir" ]; then cp -a "$plugin_dir" "$target_dir"; fi; '
+        "done; "
+        "fi; "
         f'if [ -f {shlex.quote(target)} ]; then '
         f'grep -q "store: false," {shlex.quote(target)} '
         f'&& sed -i \'s/store: false,/store: true,/g\' {shlex.quote(target)} || true; '

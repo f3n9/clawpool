@@ -245,7 +245,7 @@ class JITProvisionTests(unittest.TestCase):
                 cfg.get("plugins", {}).get("entries", {}).get("telegram", {}).get("enabled"),
             )
             self.assertTrue(
-                cfg.get("plugins", {}).get("entries", {}).get("googlechat", {}).get("enabled"),
+                cfg.get("plugins", {}).get("entries", {}).get("wecom", {}).get("enabled"),
             )
             self.assertTrue(
                 cfg.get("tools", {}).get("media", {}).get("image", {}).get("enabled"),
@@ -286,6 +286,7 @@ class JITProvisionTests(unittest.TestCase):
             self.assertEqual(cmd[:2], ["sh", "-lc"])
             self.assertIn("openai-responses.js", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("openai-responses-shared.js", cmd[2] if len(cmd) > 2 else "")
+            self.assertIn("/opt/openclaw/extensions", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("store: true", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("thinkingSignature", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("textSignature", cmd[2] if len(cmd) > 2 else "")
@@ -602,7 +603,7 @@ class JITProvisionTests(unittest.TestCase):
             {
                 "OPENCLAW_USERS_ROOT": tmpdir,
                 "OPENCLAW_DEFAULT_OPENAI_KEY": "",
-                "OPENCLAW_DEFAULT_CHANNEL_PLUGINS": "telegram,googlechat",
+                "OPENCLAW_DEFAULT_CHANNEL_PLUGINS": "telegram,wecom",
             },
             clear=False,
         ):
@@ -623,7 +624,7 @@ class JITProvisionTests(unittest.TestCase):
             with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             self.assertFalse(cfg.get("plugins", {}).get("entries", {}).get("telegram", {}).get("enabled"))
-            self.assertTrue(cfg.get("plugins", {}).get("entries", {}).get("googlechat", {}).get("enabled"))
+            self.assertTrue(cfg.get("plugins", {}).get("entries", {}).get("wecom", {}).get("enabled"))
 
     def test_webchat_file_upload_default_enabled_without_overriding_explicit_false(self):
         docker = FakeDocker()
