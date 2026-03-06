@@ -250,6 +250,11 @@ class JITProvisionTests(unittest.TestCase):
             self.assertTrue(
                 cfg.get("tools", {}).get("media", {}).get("image", {}).get("enabled"),
             )
+            self.assertEqual(cfg.get("tools", {}).get("profile"), "full")
+            self.assertEqual(
+                cfg.get("tools", {}).get("sessions", {}).get("visibility"),
+                "all",
+            )
             self.assertEqual(
                 cfg.get("browser", {}).get("executablePath"),
                 "/usr/local/bin/openclaw-chromium",
@@ -662,6 +667,40 @@ class JITProvisionTests(unittest.TestCase):
             with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             self.assertFalse(cfg.get("tools", {}).get("media", {}).get("image", {}).get("enabled"))
+
+    def test_tools_profile_and_sessions_visibility_are_forced(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1001")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1001/runtime", exist_ok=True)
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "tools": {
+                            "profile": "minimal",
+                            "sessions": {
+                                "visibility": "private",
+                            },
+                        }
+                    },
+                    f,
+                )
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "existing")
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertEqual(cfg.get("tools", {}).get("profile"), "full")
+            self.assertEqual(
+                cfg.get("tools", {}).get("sessions", {}).get("visibility"),
+                "all",
+            )
 
     def test_browser_defaults_without_overriding_explicit_values(self):
         docker = FakeDocker()

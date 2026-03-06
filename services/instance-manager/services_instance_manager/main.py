@@ -831,6 +831,13 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
     if not isinstance(tools, dict):
         tools = {}
         cfg["tools"] = tools
+    # Force consistent tool capabilities/visibility for all users.
+    tools["profile"] = "full"
+    sessions = tools.get("sessions")
+    if not isinstance(sessions, dict):
+        sessions = {}
+        tools["sessions"] = sessions
+    sessions["visibility"] = "all"
     media = tools.get("media")
     if not isinstance(media, dict):
         media = {}
