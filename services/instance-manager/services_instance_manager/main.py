@@ -1241,7 +1241,7 @@ def read_container_runtime_state(docker, container):
     return {"running": running, "health": health}
 
 
-def start_container_if_needed(docker, container, health_timeout_seconds=15):
+def start_container_if_needed(docker, container, health_timeout_seconds=15, wait_for_ready=True):
     running_ready_seconds = int(os.getenv("OPENCLAW_RUNNING_READY_SECONDS", "20"))
     state = docker.inspect(container)
     running = state.get("running")
@@ -1262,6 +1262,8 @@ def start_container_if_needed(docker, container, health_timeout_seconds=15):
         return "running"
 
     docker.start(container)
+    if not wait_for_ready:
+        return "started"
 
     deadline = time.time() + health_timeout_seconds
     while time.time() < deadline:
@@ -1683,7 +1685,8 @@ class Handler(BaseHTTPRequestHandler):
         next_path = normalize_next_path(query.get("next", ["/"])[0])
         message = "OpenClaw instance is waking up..."
         try:
-            container = self._resolve_target_container()
+            # Keep status probe fast: ensure/start container but do not block on health.
+            container = self._resolve_target_container(wait_for_ready=False)
         except ValueError:
             self._json(HTTPStatus.OK, {"ready": False, "next": next_path, "message": "Missing identity"})
             return
@@ -1708,7 +1711,7 @@ class Handler(BaseHTTPRequestHandler):
             message = "Instance is ready, redirecting..."
         self._json(HTTPStatus.OK, {"ready": ready, "next": next_path, "message": message})
 
-    def _resolve_target_container(self, query=None):
+    def _resolve_target_container(self, query=None, wait_for_ready=True):
         query = query or {}
         request_id = self.headers.get("X-Request-Id") or self.headers.get("X-Amzn-Trace-Id")
         header_identity, header_sub = extract_identity(self.headers)
@@ -1743,7 +1746,12 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             timeout = int(os.getenv("OPENCLAW_HEALTH_TIMEOUT_SECONDS", "120"))
-            startup_state = start_container_if_needed(DOCKER, container, health_timeout_seconds=timeout)
+            startup_state = start_container_if_needed(
+                DOCKER,
+                container,
+                health_timeout_seconds=timeout,
+                wait_for_ready=wait_for_ready,
+            )
         finally:
             THROTTLE.release()
 
@@ -2037,8 +2045,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"container": container, "state": "ready"})
             return
 
+        prefer_wait_page = self._should_use_bootstrap_wait_page(parsed.path)
         try:
-            container = self._resolve_target_container()
+            # For browser navigation requests, avoid blocking the initial response
+            # and render the bootstrap page while container health converges.
+            container = self._resolve_target_container(wait_for_ready=not prefer_wait_page)
         except ValueError:
             if self._should_use_bootstrap_wait_page(parsed.path):
                 self._bootstrap_wait_page(self.path, "Waiting for authenticated identity...")
@@ -2063,6 +2074,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if not re.match(r"^[a-zA-Z0-9._-]+$", container):
             self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid container name"})
+            return
+
+        if prefer_wait_page and not is_upstream_ready(container):
+            self._bootstrap_wait_page(self.path, "OpenClaw instance is waking up...")
             return
 
         try:
