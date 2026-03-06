@@ -1,4 +1,4 @@
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:latest@sha256:d60f848db7d5019336dfa17412588881a42774ad34a3429f03dd06d0a71c2848
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:main@sha256:75b4b1732478dbf8818ff2297326b8907867322695ffd8a3e8f2500846e1e74a
 FROM ${OPENCLAW_BASE_IMAGE}
 
 USER root
@@ -29,9 +29,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     ffmpeg \
     ca-certificates \
+    fonts-noto \
+    fonts-noto-cjk \
+    fonts-noto-color-emoji \
+    fonts-liberation \
+    libxss1 \
+    libgtk-3-0 \
+    libgbm1 \
+    libasound2 \
+    libnss3 \
+    libx11-xcb1 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxrandr2 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libpangocairo-1.0-0 \
+    libxshmfence1 \
+    libdrm2 \
   && rm -rf /var/lib/apt/lists/*
 
-ARG INSTALL_PLAYWRIGHT=0
+ARG INSTALL_PLAYWRIGHT=1
 RUN if [ "$INSTALL_PLAYWRIGHT" = "1" ]; then \
       node /app/node_modules/playwright-core/cli.js install chromium; \
     fi
