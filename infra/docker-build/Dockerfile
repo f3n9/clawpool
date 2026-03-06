@@ -50,8 +50,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 ARG INSTALL_PLAYWRIGHT=1
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN if [ "$INSTALL_PLAYWRIGHT" = "1" ]; then \
       node /app/node_modules/playwright-core/cli.js install chromium; \
+      CHROME_BIN="$(find "${PLAYWRIGHT_BROWSERS_PATH}" -type f \( -path "*/chrome-linux64/chrome" -o -path "*/chrome-linux/chrome" \) | head -n1)"; \
+      if [ -n "${CHROME_BIN}" ]; then ln -sf "${CHROME_BIN}" /usr/local/bin/openclaw-chromium; fi; \
+      chown -R node:node "${PLAYWRIGHT_BROWSERS_PATH}"; \
     fi
 
 USER node

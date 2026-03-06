@@ -842,6 +842,24 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
     if not isinstance(image.get("enabled"), bool):
         image["enabled"] = True
 
+    # Ensure browser automation works out-of-the-box in headless containers so
+    # agent/browser tasks (navigate/screenshot/pdf) are usable for new users.
+    browser_cfg = cfg.get("browser")
+    if not isinstance(browser_cfg, dict):
+        browser_cfg = {}
+        cfg["browser"] = browser_cfg
+    default_browser_executable = (
+        os.getenv("OPENCLAW_BROWSER_EXECUTABLE_PATH", "/usr/local/bin/openclaw-chromium").strip()
+        or "/usr/local/bin/openclaw-chromium"
+    )
+    executable_path = browser_cfg.get("executablePath")
+    if not isinstance(executable_path, str) or not executable_path.strip():
+        browser_cfg["executablePath"] = default_browser_executable
+    if not isinstance(browser_cfg.get("headless"), bool):
+        browser_cfg["headless"] = True
+    if not isinstance(browser_cfg.get("noSandbox"), bool):
+        browser_cfg["noSandbox"] = True
+
     # Ensure the default agent model is OpenAI-based so users don't fall back to image defaults
     # such as anthropic/claude-opus-* when no anthropic auth is configured.
     desired_model = (
