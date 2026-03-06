@@ -7,7 +7,7 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 ROOT_DIR="$TMP_ROOT/users"
 OPENCLAW_DEFAULT_OPENAI_KEY="default-test-key" ROOT_DIR="$ROOT_DIR" bash infra/scripts/provision-users.sh infra/users.csv
 OPENCLAW_DEFAULT_OPENAI_KEY="default-test-key" \
-OPENCLAW_ALLOWED_MODELS="gpt-5.2,gpt-5.3-codex" \
+OPENCLAW_ALLOWED_MODELS="gpt-5.4,gpt-5.3-codex,gpt-5.3-chat" \
 OPENCLAW_DEFAULT_OPENAI_MODEL="gpt-5.3-codex" \
 ROOT_DIR="$ROOT_DIR" \
 bash infra/scripts/provision-user-secrets.sh infra/users.csv
@@ -17,7 +17,7 @@ bash infra/scripts/provision-user-secrets.sh infra/users.csv
 
 set +e
 OPENCLAW_DEFAULT_OPENAI_KEY="default-test-key" \
-OPENCLAW_ALLOWED_MODELS="gpt-5.2,gpt-5.3-codex" \
+OPENCLAW_ALLOWED_MODELS="gpt-5.4,gpt-5.3-codex,gpt-5.3-chat" \
 OPENCLAW_DEFAULT_OPENAI_MODEL="gpt-4.1" \
 ROOT_DIR="$ROOT_DIR" \
 bash infra/scripts/provision-user-secrets.sh infra/users.csv >/dev/null 2>&1
