@@ -4,50 +4,93 @@ FROM ${OPENCLAW_BASE_IMAGE}
 USER root
 
 ARG DEBIAN_FRONTEND=noninteractive
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    curl \
-    wget \
-    jq \
-    ripgrep \
-    fd-find \
-    less \
-    vim \
-    nano \
-    procps \
-    iproute2 \
-    iputils-ping \
-    dnsutils \
-    netcat-openbsd \
-    telnet \
-    traceroute \
-    lsof \
-    strace \
-    build-essential \
-    python3 \
-    python3-pip \
-    python3-venv \
-    ffmpeg \
-    ca-certificates \
-    fonts-noto \
-    fonts-noto-cjk \
-    fonts-noto-color-emoji \
-    fonts-liberation \
-    libxss1 \
-    libgtk-3-0 \
-    libgbm1 \
-    libasound2 \
-    libnss3 \
-    libx11-xcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libpangocairo-1.0-0 \
-    libxshmfence1 \
-    libdrm2 \
-  && rm -rf /var/lib/apt/lists/*
+ARG INSTALL_OCR=1
+ARG INSTALL_LIBREOFFICE=1
+ARG INSTALL_PDF=1
+ARG INSTALL_IMAGE=1
+ARG INSTALL_MEDIA=1
+ARG INSTALL_SCRAPING=1
+ARG INSTALL_ANALYSIS=1
+ARG INSTALL_ARCHIVE=1
+RUN set -eux; \
+    apt-get update; \
+    packages=' \
+      git \
+      curl \
+      wget \
+      jq \
+      ripgrep \
+      fd-find \
+      less \
+      vim \
+      nano \
+      procps \
+      iproute2 \
+      iputils-ping \
+      dnsutils \
+      netcat-openbsd \
+      telnet \
+      traceroute \
+      lsof \
+      strace \
+      build-essential \
+      make \
+      patch \
+      diffutils \
+      file \
+      tree \
+      python3 \
+      python3-pip \
+      python3-venv \
+      ffmpeg \
+      ca-certificates \
+      fonts-noto \
+      fonts-noto-cjk \
+      fonts-noto-color-emoji \
+      fonts-liberation \
+      libxss1 \
+      libgtk-3-0 \
+      libgbm1 \
+      libasound2 \
+      libnss3 \
+      libx11-xcb1 \
+      libxcomposite1 \
+      libxdamage1 \
+      libxrandr2 \
+      libatk1.0-0 \
+      libatk-bridge2.0-0 \
+      libpangocairo-1.0-0 \
+      libxshmfence1 \
+      libdrm2 \
+    '; \
+    if [ "$INSTALL_OCR" = "1" ]; then \
+      packages="$packages tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim"; \
+    fi; \
+    if [ "$INSTALL_LIBREOFFICE" = "1" ]; then \
+      packages="$packages libreoffice libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-draw"; \
+    fi; \
+    if [ "$INSTALL_PDF" = "1" ]; then \
+      packages="$packages pandoc poppler-utils ghostscript qpdf mupdf-tools wkhtmltopdf ocrmypdf img2pdf antiword odt2txt catdoc"; \
+    fi; \
+    if [ "$INSTALL_IMAGE" = "1" ]; then \
+      packages="$packages imagemagick graphicsmagick pngquant jpegoptim optipng webp libimage-exiftool-perl"; \
+    fi; \
+    if [ "$INSTALL_MEDIA" = "1" ]; then \
+      packages="$packages mediainfo"; \
+    fi; \
+    if [ "$INSTALL_SCRAPING" = "1" ]; then \
+      packages="$packages lynx html2text"; \
+    fi; \
+    if [ "$INSTALL_ANALYSIS" = "1" ]; then \
+      packages="$packages silversearcher-ag universal-ctags"; \
+    fi; \
+    if [ "$INSTALL_ARCHIVE" = "1" ]; then \
+      packages="$packages zip unzip p7zip-full xz-utils zstd bzip2 lz4 unar cabextract"; \
+    fi; \
+    apt-get install -y --no-install-recommends $packages; \
+    if ! command -v fd >/dev/null 2>&1 && command -v fdfind >/dev/null 2>&1; then ln -sf "$(command -v fdfind)" /usr/local/bin/fd; fi; \
+    if ! command -v magick >/dev/null 2>&1 && command -v convert >/dev/null 2>&1; then ln -sf "$(command -v convert)" /usr/local/bin/magick; fi; \
+    rm -rf /var/lib/apt/lists/*
 
 ARG INSTALL_PLAYWRIGHT=1
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright

@@ -85,6 +85,13 @@ docker compose --env-file infra/.env -f infra/docker-compose.base.yml up -d --bu
 docker compose --env-file infra/.env -f infra/docker-compose.base.yml ps
 ```
 
+## 自定义镜像能力
+
+- 当前自定义镜像默认内置 OCR、Office/PDF 转换、图片处理、音视频处理、网页抓取、压缩归档、源码分析工具。
+- 关键命令包括：`tesseract`、`soffice`、`pandoc`、`pdftotext`、`qpdf`、`mutool`、`magick`、`ffmpeg`、`mediainfo`、`lynx`、`html2text`、`7z`、`zip`、`rg`、`ag`、`ctags`。
+- 本地构建示例：`docker build -t yx-openclaw:20260306 infra/docker-build`
+- 若后续要瘦身，可通过 build args 关闭某些工具组，例如：`--build-arg INSTALL_LIBREOFFICE=0 --build-arg INSTALL_OCR=0`。
+
 ## 使用方式
 
 1. 用户访问 `https://<OPENCLAW_HOST>`。

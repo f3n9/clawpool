@@ -55,3 +55,34 @@ It validates:
 - per-user runtime config schema compatibility (`trusted-proxy` auth keys)
 - `/resolve` routes to the expected dedicated container
 - websocket upgrade returns `101 Switching Protocols`
+
+## Custom Image Tooling
+
+The custom image in `infra/docker-build` now defaults to a broad toolset for OpenClaw agent tasks.
+
+Tool groups:
+- OCR: `tesseract`, `tesseract-ocr-eng`, `tesseract-ocr-chi-sim`
+- Office/PDF: `libreoffice`, `pandoc`, `poppler-utils`, `ghostscript`, `qpdf`, `mupdf-tools`, `wkhtmltopdf`, `ocrmypdf`
+- Image: `imagemagick`, `graphicsmagick`, `pngquant`, `jpegoptim`, `optipng`, `webp`, `exiftool`
+- Media: `ffmpeg`, `mediainfo`
+- Scraping: `curl`, `wget`, `lynx`, `html2text`, Playwright Chromium
+- Archive: `zip`, `unzip`, `7z`, `xz`, `zstd`, `bzip2`, `lz4`, `unar`, `cabextract`
+- Source analysis: `rg`, `fd`, `jq`, `tree`, `file`, `make`, `patch`, `ag`, `ctags`
+
+Build args all default to enabled:
+- `INSTALL_OCR=1`
+- `INSTALL_LIBREOFFICE=1`
+- `INSTALL_PDF=1`
+- `INSTALL_IMAGE=1`
+- `INSTALL_MEDIA=1`
+- `INSTALL_SCRAPING=1`
+- `INSTALL_ANALYSIS=1`
+- `INSTALL_ARCHIVE=1`
+
+Example local build:
+
+- `docker build -t yx-openclaw:20260306 infra/docker-build`
+
+Example slimmer build:
+
+- `docker build -t yx-openclaw:lite --build-arg INSTALL_LIBREOFFICE=0 --build-arg INSTALL_OCR=0 infra/docker-build`
