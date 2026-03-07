@@ -8,6 +8,7 @@ import json
 from services_instance_manager.main import (
     CONSOLE_STATIC_ROOT,
     DockerAPIError,
+    _build_default_startup_cmd,
     _parse_console_control,
     _inject_trusted_proxy_user_header_if_needed,
     is_browser_navigation_request,
@@ -605,6 +606,10 @@ class JITProvisionTests(unittest.TestCase):
             provider = cfg.get("models", {}).get("providers", {}).get("openai", {})
             self.assertEqual(provider.get("api"), "openai-completions")
             self.assertTrue(all(m.get("reasoning") is False for m in provider.get("models", [])))
+            _, spec = docker.created[0]
+            cmd = spec.get("Cmd", [])
+            self.assertEqual(cmd[:2], ["sh", "-lc"])
+            self.assertIn("/app/extensions", cmd[2] if len(cmd) > 2 else "")
 
     def test_channel_plugins_default_enabled_without_overriding_explicit_false(self):
         docker = FakeDocker()
@@ -636,6 +641,101 @@ class JITProvisionTests(unittest.TestCase):
                 cfg = json.load(f)
             self.assertFalse(cfg.get("plugins", {}).get("entries", {}).get("telegram", {}).get("enabled"))
             self.assertTrue(cfg.get("plugins", {}).get("entries", {}).get("wecom", {}).get("enabled"))
+
+    def test_discovered_channel_plugins_default_enabled_without_overriding_explicit_false(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1001")
+        with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as plugdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
+                "OPENCLAW_DEFAULT_CHANNEL_PLUGINS": "telegram",
+                "OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS": plugdir,
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1001/runtime", exist_ok=True)
+            os.makedirs(os.path.join(plugdir, "discord"), exist_ok=True)
+            os.makedirs(os.path.join(plugdir, "wecom"), exist_ok=True)
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "plugins": {
+                            "entries": {
+                                "telegram": {"enabled": False},
+                            }
+                        }
+                    },
+                    f,
+                )
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "existing")
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            entries = cfg.get("plugins", {}).get("entries", {})
+            self.assertFalse(entries.get("telegram", {}).get("enabled"))
+            self.assertTrue(entries.get("discord", {}).get("enabled"))
+            self.assertTrue(entries.get("wecom", {}).get("enabled"))
+
+    def test_invalid_discovered_plugin_names_are_ignored(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1001")
+        with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as plugdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
+                "OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS": plugdir,
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1001/runtime", exist_ok=True)
+            os.makedirs(os.path.join(plugdir, "good-plugin"), exist_ok=True)
+            os.makedirs(os.path.join(plugdir, "Bad Plugin"), exist_ok=True)
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "existing")
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            entries = cfg.get("plugins", {}).get("entries", {})
+            self.assertIn("good-plugin", entries)
+            self.assertNotIn("Bad Plugin", entries)
+
+    def test_default_startup_cmd_reconciles_image_plugin_roots(self):
+        cmd = _build_default_startup_cmd()
+        self.assertEqual(cmd[:2], ["sh", "-lc"])
+        script = cmd[2]
+        self.assertIn("/opt/openclaw/extensions", script)
+        self.assertIn("/app/extensions", script)
+        self.assertIn("OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS", script)
+        self.assertIn("openclaw.json", script)
+        self.assertIn("plugins.entries", script)
+        self.assertIn("enabled = true", script)
+
+    def test_custom_startup_cmd_still_runs_plugin_reconciliation(self):
+        docker = FakeDocker()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
+                "OPENCLAW_DEFAULT_OPENAI_MODEL": "gpt-5.2",
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+                "OPENCLAW_STARTUP_CMD": "node custom-entry.mjs",
+            },
+            clear=False,
+        ):
+            status = ensure_container_exists(docker, identity="u1003", container="openclaw-u1003")
+            self.assertEqual(status, "created")
+            _, spec = docker.created[0]
+            cmd = spec.get("Cmd", [])
+            self.assertEqual(cmd[:2], ["sh", "-lc"])
+            script = cmd[2] if len(cmd) > 2 else ""
+            self.assertIn("/app/extensions", script)
+            self.assertIn("openclaw.json", script)
+            self.assertIn("exec node custom-entry.mjs", script)
 
     def test_webchat_file_upload_default_enabled_without_overriding_explicit_false(self):
         docker = FakeDocker()
@@ -771,7 +871,11 @@ class JITProvisionTests(unittest.TestCase):
             status = ensure_container_exists(docker, identity="u1003", container="openclaw-u1003")
             self.assertEqual(status, "created")
             _, spec = docker.created[0]
-            self.assertNotIn("Cmd", spec)
+            cmd = spec.get("Cmd", [])
+            self.assertEqual(cmd[:2], ["sh", "-lc"])
+            script = cmd[2] if len(cmd) > 2 else ""
+            self.assertIn("/app/extensions", script)
+            self.assertNotIn("store: true", script)
 
     def test_custom_startup_cmd_overrides_default_store_patch(self):
         docker = FakeDocker()
@@ -792,10 +896,12 @@ class JITProvisionTests(unittest.TestCase):
             status = ensure_container_exists(docker, identity="u1004", container="openclaw-u1004")
             self.assertEqual(status, "created")
             _, spec = docker.created[0]
-            self.assertEqual(
-                spec.get("Cmd"),
-                ["node", "openclaw.mjs", "gateway", "--allow-unconfigured"],
-            )
+            cmd = spec.get("Cmd", [])
+            self.assertEqual(cmd[:2], ["sh", "-lc"])
+            script = cmd[2] if len(cmd) > 2 else ""
+            self.assertIn("/app/extensions", script)
+            self.assertIn("store: true", script)
+            self.assertIn("exec node openclaw.mjs gateway --allow-unconfigured", script)
 
     def test_repairs_local_device_pairing_scopes_for_cli(self):
         docker = FakeDocker()

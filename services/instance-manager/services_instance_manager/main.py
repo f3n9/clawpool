@@ -27,6 +27,13 @@ DEFAULT_OPERATOR_SCOPES = [
     "operator.pairing",
 ]
 
+DEFAULT_CHANNEL_PLUGIN_DIRS = [
+    "/opt/openclaw/extensions",
+    "/app/extensions",
+]
+
+PLUGIN_ID_RE = re.compile(r"^[a-z0-9._-]+$")
+
 
 class StartupThrottle:
     def __init__(self, max_concurrent):
@@ -289,6 +296,57 @@ def split_csv_values(text):
     if not text:
         return []
     return [v.strip() for v in text.split(",") if v.strip()]
+
+
+def _is_valid_plugin_id(plugin_id):
+    return bool(isinstance(plugin_id, str) and PLUGIN_ID_RE.match(plugin_id.strip()))
+
+
+def _resolve_default_channel_plugin_dirs():
+    configured = split_csv_values(os.getenv("OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS", ""))
+    return configured or list(DEFAULT_CHANNEL_PLUGIN_DIRS)
+
+
+def _discover_channel_plugin_ids(plugin_dirs=None):
+    discovered = []
+    for plugin_dir in plugin_dirs or _resolve_default_channel_plugin_dirs():
+        try:
+            root = Path(plugin_dir)
+        except TypeError:
+            continue
+        if not root.is_dir():
+            continue
+        for entry in sorted(root.iterdir(), key=lambda item: item.name):
+            if not entry.is_dir() or not _is_valid_plugin_id(entry.name):
+                continue
+            discovered.append(entry.name)
+    return _merge_unique_str_values(discovered)
+
+
+def _default_channel_plugin_ids():
+    configured = split_csv_values(os.getenv("OPENCLAW_DEFAULT_CHANNEL_PLUGINS", "telegram,wecom"))
+    discovered = _discover_channel_plugin_ids()
+    return _merge_unique_str_values([*configured, *discovered])
+
+
+def _ensure_default_channel_plugins(cfg, plugin_ids):
+    plugins = cfg.get("plugins")
+    if not isinstance(plugins, dict):
+        plugins = {}
+        cfg["plugins"] = plugins
+    entries = plugins.get("entries")
+    if not isinstance(entries, dict):
+        entries = {}
+        plugins["entries"] = entries
+    for plugin_id in _merge_unique_str_values(plugin_ids):
+        if not _is_valid_plugin_id(plugin_id):
+            continue
+        entry = entries.get(plugin_id)
+        if not isinstance(entry, dict):
+            entry = {}
+            entries[plugin_id] = entry
+        if not isinstance(entry.get("enabled"), bool):
+            entry["enabled"] = True
 
 
 def is_websocket_upgrade(headers):
@@ -802,28 +860,9 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
                 os.getenv("OPENCLAW_GATEWAY_TRUSTED_PROXIES", "127.0.0.1/32,172.16.0.0/12")
             )
 
-    # Ensure commonly used channel plugins are enabled by default so Channels page can
-    # resolve per-channel config schema (users can still override later in runtime config).
-    plugins = cfg.get("plugins")
-    if not isinstance(plugins, dict):
-        plugins = {}
-        cfg["plugins"] = plugins
-    entries = plugins.get("entries")
-    if not isinstance(entries, dict):
-        entries = {}
-        plugins["entries"] = entries
-    default_channel_plugins = split_csv_values(
-        os.getenv("OPENCLAW_DEFAULT_CHANNEL_PLUGINS", "telegram,wecom")
-    )
-    for plugin_id in default_channel_plugins:
-        if not re.match(r"^[a-z0-9._-]+$", plugin_id):
-            continue
-        entry = entries.get(plugin_id)
-        if not isinstance(entry, dict):
-            entry = {}
-            entries[plugin_id] = entry
-        if not isinstance(entry.get("enabled"), bool):
-            entry["enabled"] = True
+    # Ensure bundled/default channel plugins are enabled so the Channels page can
+    # resolve schemas, while preserving explicit user enable/disable choices.
+    _ensure_default_channel_plugins(cfg, _default_channel_plugin_ids())
 
     # Enable webchat image attachments by default for new/legacy users that do
     # not have an explicit preference yet.
@@ -1029,11 +1068,75 @@ def _should_force_openai_responses_store():
     return api == "openai-responses"
 
 
-def _build_default_startup_cmd():
+def _build_default_startup_cmd(start_cmd=None, force_responses_store=None):
     target = "/app/node_modules/@mariozechner/pi-ai/dist/providers/openai-responses.js"
     shared = "/app/node_modules/@mariozechner/pi-ai/dist/providers/openai-responses-shared.js"
     bundled_ext = "/opt/openclaw/extensions"
     runtime_ext = "/home/node/.openclaw/extensions"
+    runtime_cfg = "/home/node/.openclaw/openclaw.json"
+    reconcile_channel_plugins = """
+const fs = require('fs');
+const path = require('path');
+const defaultRoots = ['/app/extensions', '/opt/openclaw/extensions'];
+const configuredRoots = (process.env.OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
+const pluginRoots = configuredRoots.length ? configuredRoots : defaultRoots;
+const validPluginId = (value) => /^[a-z0-9._-]+$/.test(value);
+const explicitPluginIds = (process.env.OPENCLAW_DEFAULT_CHANNEL_PLUGINS || '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(validPluginId);
+const discoveredPluginIds = [];
+for (const root of pluginRoots) {
+  try {
+    if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
+      continue;
+    }
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (entry.isDirectory() && validPluginId(entry.name)) {
+        discoveredPluginIds.push(entry.name);
+      }
+    }
+  } catch (error) {
+  }
+}
+let cfg = {};
+try {
+  if (fs.existsSync('RUNTIME_CFG')) {
+    cfg = JSON.parse(fs.readFileSync('RUNTIME_CFG', 'utf8'));
+  }
+} catch (error) {
+  cfg = {};
+}
+if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
+  cfg = {};
+}
+if (!cfg.plugins || typeof cfg.plugins !== 'object' || Array.isArray(cfg.plugins)) {
+  cfg.plugins = {};
+}
+if (!cfg.plugins.entries || typeof cfg.plugins.entries !== 'object' || Array.isArray(cfg.plugins.entries)) {
+  cfg.plugins.entries = {};
+}
+for (const pluginId of [...new Set([...explicitPluginIds, ...discoveredPluginIds])]) {
+  let entry = cfg.plugins.entries[pluginId];
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    entry = {};
+    cfg.plugins.entries[pluginId] = entry;
+  }
+  if (typeof entry.enabled !== 'boolean') {
+    entry.enabled = true;
+  }
+}
+fs.mkdirSync(path.dirname('RUNTIME_CFG'), { recursive: true });
+fs.writeFileSync('RUNTIME_CFG', JSON.stringify(cfg, null, 2) + '
+');
+""".replace("RUNTIME_CFG", runtime_cfg)
+    if force_responses_store is None:
+        force_responses_store = _should_force_openai_responses_store()
+    if not start_cmd:
+        start_cmd = "node openclaw.mjs gateway --allow-unconfigured"
     script = (
         f'if [ -d {shlex.quote(bundled_ext)} ]; then '
         f'mkdir -p {shlex.quote(runtime_ext)}; '
@@ -1044,25 +1147,30 @@ def _build_default_startup_cmd():
         'if [ ! -d "$target_dir" ]; then cp -a "$plugin_dir" "$target_dir"; fi; '
         "done; "
         "fi; "
-        f'if [ -f {shlex.quote(target)} ]; then '
-        f'grep -q "store: false," {shlex.quote(target)} '
-        f'&& sed -i \'s/store: false,/store: true,/g\' {shlex.quote(target)} || true; '
-        "fi; "
-        f'if [ -f {shlex.quote(shared)} ]; then '
-        f'grep -q "currentBlock.thinkingSignature = JSON.stringify(item);" {shlex.quote(shared)} '
-        f'&& sed -i \'s|currentBlock.thinkingSignature = JSON.stringify(item);|// stripped by instance-manager to avoid stale rs item replay|g\' {shlex.quote(shared)} || true; '
-        f'grep -q "currentBlock.textSignature = item.id;" {shlex.quote(shared)} '
-        f'&& sed -i \'s|currentBlock.textSignature = item.id;|// stripped by instance-manager to avoid msg/rs coupling|g\' {shlex.quote(shared)} || true; '
-        f'grep -q "let msgId = textBlock.textSignature;" {shlex.quote(shared)} '
-        f'&& sed -i \'s|let msgId = textBlock.textSignature;|let msgId = undefined; // stripped by instance-manager to avoid msg/rs coupling|g\' {shlex.quote(shared)} || true; '
-        f'grep -q "if (!msgId)" {shlex.quote(shared)} '
-        f'&& sed -i \'s|if (!msgId)|if (false \\&\\& !msgId)|g\' {shlex.quote(shared)} || true; '
-        f'grep -q "else if (msgId.length > 64)" {shlex.quote(shared)} '
-        f'&& sed -i \'s|else if (msgId.length > 64)|else if (msgId \\&\\& msgId.length > 64)|g\' {shlex.quote(shared)} || true; '
-        "fi; "
-        "exec node openclaw.mjs gateway --allow-unconfigured"
+        f'node -e {shlex.quote(reconcile_channel_plugins)} || true; '
     )
+    if force_responses_store:
+        script += (
+            f'if [ -f {shlex.quote(target)} ]; then '
+            f'grep -q "store: false," {shlex.quote(target)} '
+            f"&& sed -i 's/store: false,/store: true,/g' {shlex.quote(target)} || true; "
+            "fi; "
+            f'if [ -f {shlex.quote(shared)} ]; then '
+            f'grep -q "currentBlock.thinkingSignature = JSON.stringify(item);" {shlex.quote(shared)} '
+            f"&& sed -i 's|currentBlock.thinkingSignature = JSON.stringify(item);|// stripped by instance-manager to avoid stale rs item replay|g' {shlex.quote(shared)} || true; "
+            f'grep -q "currentBlock.textSignature = item.id;" {shlex.quote(shared)} '
+            f"&& sed -i 's|currentBlock.textSignature = item.id;|// stripped by instance-manager to avoid msg/rs coupling|g' {shlex.quote(shared)} || true; "
+            f'grep -q "let msgId = textBlock.textSignature;" {shlex.quote(shared)} '
+            f"&& sed -i 's|let msgId = textBlock.textSignature;|let msgId = undefined; // stripped by instance-manager to avoid msg/rs coupling|g' {shlex.quote(shared)} || true; "
+            f'grep -q "if (!msgId)" {shlex.quote(shared)} '
+            f"&& sed -i 's|if (!msgId)|if (false \\&\\& !msgId)|g' {shlex.quote(shared)} || true; "
+            f'grep -q "else if (msgId.length > 64)" {shlex.quote(shared)} '
+            f"&& sed -i 's|else if (msgId.length > 64)|else if (msgId \\&\\& msgId.length > 64)|g' {shlex.quote(shared)} || true; "
+            "fi; "
+        )
+    script += f"exec {start_cmd}"
     return ["sh", "-lc", script]
+
 
 
 def ensure_user_runtime(identity, users_root, gateway_token=""):
@@ -1159,6 +1267,12 @@ def _build_container_spec(container, identity, artifacts):
         f"OPENCLAW_OPENAI_ENDPOINT={endpoint}",
         f"OPENCLAW_OPENAI_MODEL={model}",
     ]
+    default_channel_plugins = os.getenv("OPENCLAW_DEFAULT_CHANNEL_PLUGINS", "").strip()
+    if default_channel_plugins:
+        env.append(f"OPENCLAW_DEFAULT_CHANNEL_PLUGINS={default_channel_plugins}")
+    default_channel_plugin_dirs = os.getenv("OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS", "").strip()
+    if default_channel_plugin_dirs:
+        env.append(f"OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS={default_channel_plugin_dirs}")
     gateway_token = (artifacts.get("gateway_token") or "").strip()
     if gateway_token:
         env.append(f"OPENCLAW_GATEWAY_TOKEN={gateway_token}")
@@ -1183,10 +1297,10 @@ def _build_container_spec(container, identity, artifacts):
             "RestartPolicy": {"Name": "unless-stopped"},
         },
     }
-    if cmd_value:
-        spec["Cmd"] = shlex.split(cmd_value)
-    elif _should_force_openai_responses_store():
-        spec["Cmd"] = _build_default_startup_cmd()
+    spec["Cmd"] = _build_default_startup_cmd(
+        start_cmd=cmd_value or "node openclaw.mjs gateway --allow-unconfigured",
+        force_responses_store=_should_force_openai_responses_store(),
+    )
     return spec
 
 
