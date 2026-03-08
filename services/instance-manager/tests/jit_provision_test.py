@@ -657,6 +657,26 @@ class JITProvisionTests(unittest.TestCase):
             self.assertIn("/app/extensions", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("channels[channelId]", cmd[2] if len(cmd) > 2 else "")
 
+    def test_extra_channel_plugins_default_enabled_also_enable_channel_config(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1001")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
+                "OPENCLAW_DEFAULT_CHANNEL_PLUGINS": "wecom",
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1001/runtime", exist_ok=True)
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "existing")
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertTrue(cfg.get("plugins", {}).get("entries", {}).get("wecom", {}).get("enabled"))
+            self.assertTrue(cfg.get("channels", {}).get("wecom", {}).get("enabled"))
+
     def test_channel_plugins_default_enabled_without_overriding_explicit_false(self):
         docker = FakeDocker()
         docker.existing.add("openclaw-u1001")
@@ -746,6 +766,15 @@ class JITProvisionTests(unittest.TestCase):
             entries = cfg.get("plugins", {}).get("entries", {})
             self.assertIn("good-plugin", entries)
             self.assertNotIn("Bad Plugin", entries)
+
+    def test_default_startup_cmd_installs_runtime_compatibility_shims(self):
+        cmd = _build_default_startup_cmd()
+        self.assertEqual(cmd[:2], ["sh", "-lc"])
+        script = cmd[2]
+        self.assertIn("parse-finite-number.js", script)
+        self.assertIn("abort-signal.js", script)
+        self.assertIn("waitForAbortSignal", script)
+        self.assertIn("parseStrictPositiveInteger", script)
 
     def test_default_startup_cmd_reconciles_built_in_channels_and_extra_plugins(self):
         cmd = _build_default_startup_cmd()

@@ -337,6 +337,10 @@ def _ensure_default_channel_plugins(cfg, plugin_ids):
     if not isinstance(entries, dict):
         entries = {}
         plugins["entries"] = entries
+    channels = cfg.get("channels")
+    if not isinstance(channels, dict):
+        channels = {}
+        cfg["channels"] = channels
     for plugin_id in _merge_unique_str_values(plugin_ids):
         if not _is_valid_plugin_id(plugin_id):
             continue
@@ -346,6 +350,12 @@ def _ensure_default_channel_plugins(cfg, plugin_ids):
             entries[plugin_id] = entry
         if not isinstance(entry.get("enabled"), bool):
             entry["enabled"] = True
+        channel_cfg = channels.get(plugin_id)
+        if not isinstance(channel_cfg, dict):
+            channel_cfg = {}
+            channels[plugin_id] = channel_cfg
+        if not isinstance(channel_cfg.get("enabled"), bool):
+            channel_cfg["enabled"] = True
 
 
 def is_websocket_upgrade(headers):
@@ -1182,6 +1192,51 @@ def _build_default_startup_cmd(start_cmd=None, force_responses_store=None):
     bundled_ext = "/opt/openclaw/extensions"
     runtime_ext = "/home/node/.openclaw/extensions"
     runtime_cfg = "/home/node/.openclaw/openclaw.json"
+    install_compatibility_shims = """
+const fs = require('fs');
+const path = require('path');
+const compatRoot = '/app/src/infra';
+fs.mkdirSync(compatRoot, { recursive: true });
+const writeCompatFile = (name, source) => {
+  const target = path.join(compatRoot, name);
+  if (!fs.existsSync(target)) {
+    fs.writeFileSync(target, source);
+  }
+};
+writeCompatFile('parse-finite-number.js', `export function parseFiniteNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+export function parseStrictPositiveInteger(value) {
+  const parsed = parseFiniteNumber(value);
+  return typeof parsed === "number" && Number.isInteger(parsed) && parsed > 0
+    ? parsed
+    : undefined;
+}
+`);
+writeCompatFile('abort-signal.js', `export async function waitForAbortSignal(signal) {
+  if (!signal || signal.aborted) {
+    return;
+  }
+  await new Promise((resolve) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+`);
+"""
     reconcile_channel_plugins = """
 const fs = require('fs');
 const path = require('path');
@@ -1378,6 +1433,14 @@ for (const pluginId of extraPluginIds) {
   if (typeof entry.enabled !== 'boolean') {
     entry.enabled = true;
   }
+  let channelCfg = cfg.channels[pluginId];
+  if (!channelCfg || typeof channelCfg !== 'object' || Array.isArray(channelCfg)) {
+    channelCfg = {};
+    cfg.channels[pluginId] = channelCfg;
+  }
+  if (typeof channelCfg.enabled !== 'boolean') {
+    channelCfg.enabled = true;
+  }
   if (!cfg.plugins.allow.includes(pluginId)) {
     cfg.plugins.allow.push(pluginId);
   }
@@ -1403,6 +1466,7 @@ fs.writeFileSync('RUNTIME_CFG', JSON.stringify(cfg, null, 2) + '\\n');
         'if [ ! -d "$target_dir" ]; then cp -a "$plugin_dir" "$target_dir"; fi; '
         "done; "
         "fi; "
+        f'node -e {shlex.quote(install_compatibility_shims)} || true; '
         f'node -e {shlex.quote(reconcile_channel_plugins)} || true; '
     )
     if force_responses_store:
