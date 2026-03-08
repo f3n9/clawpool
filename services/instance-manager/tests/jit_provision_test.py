@@ -601,7 +601,75 @@ class JITProvisionTests(unittest.TestCase):
             self.assertEqual(reasoning_map.get("gpt-5.3-chat"), False)
             self.assertEqual(reasoning_map.get("Kimi-K2.5"), False)
 
-    def test_default_model_falls_back_to_gpt_5_3_chat_when_env_missing(self):
+    def test_default_model_falls_back_to_dashscope_minimax_when_env_missing(self):
+        docker = FakeDocker()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
+                "OPENCLAW_DASHSCOPE_API_KEY": "dashscope-test-key",
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+            },
+            clear=False,
+        ):
+            os.environ.pop("OPENCLAW_DEFAULT_OPENAI_MODEL", None)
+            os.environ.pop("OPENCLAW_ALLOWED_MODELS", None)
+            status = ensure_container_exists(docker, identity="u1009", container="openclaw-u1009")
+            self.assertEqual(status, "created")
+            with open(f"{tmpdir}/u1009/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertEqual(
+                cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary"),
+                "dashscope/MiniMax-M2.5",
+            )
+            providers = cfg.get("models", {}).get("providers", {})
+            self.assertIn("openai", providers)
+            self.assertIn("dashscope", providers)
+            openai_ids = [model.get("id") for model in providers.get("openai", {}).get("models", [])]
+            self.assertIn("gpt-5.4", openai_ids)
+            self.assertIn("gpt-5.3-codex", openai_ids)
+            self.assertIn("gpt-5.3-chat", openai_ids)
+            dashscope_ids = [model.get("id") for model in providers.get("dashscope", {}).get("models", [])]
+            self.assertEqual(
+                dashscope_ids,
+                ["MiniMax-M2.5", "kimi-k2.5", "deepseek-v3.2", "qwen3.5-flash"],
+            )
+
+    def test_adds_dashscope_provider_with_expected_defaults(self):
+        docker = FakeDocker()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
+                "OPENCLAW_DASHSCOPE_API_KEY": "dashscope-test-key",
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+            },
+            clear=False,
+        ):
+            os.environ.pop("OPENCLAW_DEFAULT_OPENAI_MODEL", None)
+            os.environ.pop("OPENCLAW_ALLOWED_MODELS", None)
+            status = ensure_container_exists(docker, identity="u1010", container="openclaw-u1010")
+            self.assertEqual(status, "created")
+            with open(f"{tmpdir}/u1010/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            dashscope = cfg.get("models", {}).get("providers", {}).get("dashscope", {})
+            self.assertEqual(dashscope.get("api"), "openai-completions")
+            self.assertEqual(dashscope.get("apiKey"), "dashscope-test-key")
+            self.assertEqual(
+                dashscope.get("baseUrl"),
+                "https://dashscope-yxai.hatch.yinxiang.com/compatible-mode/v1",
+            )
+            params = cfg.get("agents", {}).get("defaults", {}).get("models", {}).get("dashscope/MiniMax-M2.5", {}).get("params", {})
+            self.assertEqual(params.get("transport"), "sse")
+            self.assertEqual(params.get("openaiWsWarmup"), False)
+
+    def test_skips_dashscope_provider_when_key_missing(self):
         docker = FakeDocker()
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
             os.environ,
@@ -616,16 +684,16 @@ class JITProvisionTests(unittest.TestCase):
         ):
             os.environ.pop("OPENCLAW_DEFAULT_OPENAI_MODEL", None)
             os.environ.pop("OPENCLAW_ALLOWED_MODELS", None)
-            status = ensure_container_exists(docker, identity="u1009", container="openclaw-u1009")
+            os.environ.pop("OPENCLAW_DASHSCOPE_API_KEY", None)
+            status = ensure_container_exists(docker, identity="u1011", container="openclaw-u1011")
             self.assertEqual(status, "created")
-            with open(f"{tmpdir}/u1009/runtime/openclaw.json", "r", encoding="utf-8") as f:
+            with open(f"{tmpdir}/u1011/runtime/openclaw.json", "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             self.assertEqual(
                 cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary"),
                 "openai/gpt-5.3-chat",
             )
-            provider_models = cfg.get("models", {}).get("providers", {}).get("openai", {}).get("models", [])
-            self.assertEqual(provider_models[0].get("id"), "gpt-5.3-chat")
+            self.assertNotIn("dashscope", cfg.get("models", {}).get("providers", {}))
 
     def test_honors_openai_api_override(self):
         docker = FakeDocker()

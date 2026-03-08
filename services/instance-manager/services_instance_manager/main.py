@@ -33,6 +33,22 @@ DEFAULT_CHANNEL_PLUGIN_DIRS = [
 
 PLUGIN_ID_RE = re.compile(r"^[a-z0-9._-]+$")
 
+DEFAULT_OPENAI_MODEL_IDS = [
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-chat",
+]
+
+DEFAULT_DASHSCOPE_MODEL_IDS = [
+    "MiniMax-M2.5",
+    "kimi-k2.5",
+    "deepseek-v3.2",
+    "qwen3.5-flash",
+]
+
+DEFAULT_DASHSCOPE_COMPAT_ENDPOINT = (
+    "https://dashscope-yxai.hatch.yinxiang.com/compatible-mode/v1/chat/completions"
+)
 
 class StartupThrottle:
     def __init__(self, max_concurrent):
@@ -764,6 +780,58 @@ def _model_supports_reasoning(model_id, openai_api):
     return True
 
 
+def _normalize_openai_compatible_base_url(url, default_url):
+    value = (url or "").strip() or default_url
+    parsed = urlparse(value)
+    suffix = "/chat/completions"
+    path = parsed.path or ""
+    if path.endswith(suffix):
+        trimmed_path = path[: -len(suffix)] or "/"
+        parsed = parsed._replace(path=trimmed_path, params="", query="", fragment="")
+        value = parsed.geturl()
+    return value.rstrip("/")
+
+
+def _normalize_model_ref(model_ref, dashscope_model_ids=None, default_provider="openai"):
+    if not isinstance(model_ref, str):
+        return ""
+    ref = model_ref.strip()
+    if not ref:
+        return ""
+    if "/" in ref:
+        provider, model_id = ref.split("/", 1)
+        provider = provider.strip().lower()
+        model_id = model_id.strip()
+        return f"{provider}/{model_id}" if provider and model_id else ""
+    dashscope_lookup = {candidate: candidate for candidate in (dashscope_model_ids or DEFAULT_DASHSCOPE_MODEL_IDS)}
+    canonical_dashscope = dashscope_lookup.get(ref)
+    if canonical_dashscope:
+        return f"dashscope/{canonical_dashscope}"
+    return f"{default_provider}/{ref}"
+
+
+def _resolve_dashscope_api_key():
+    return os.getenv("OPENCLAW_DASHSCOPE_API_KEY", "").strip()
+
+
+def _default_primary_model_ref():
+    if _resolve_dashscope_api_key():
+        return "dashscope/MiniMax-M2.5"
+    return "openai/gpt-5.3-chat"
+
+
+def _provider_model_ids(model_refs, provider, default_ids):
+    out = []
+    prefix = f"{provider}/"
+    for model_ref in model_refs:
+        if not isinstance(model_ref, str) or not model_ref.startswith(prefix):
+            continue
+        model_id = model_ref[len(prefix):].strip()
+        if model_id and model_id not in out:
+            out.append(model_id)
+    return out or list(default_ids)
+
+
 def _resolve_operator_scopes():
     configured = split_csv_values(
         os.getenv("OPENCLAW_OPERATOR_SCOPES", ",".join(DEFAULT_OPERATOR_SCOPES))
@@ -1024,16 +1092,55 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
     if not isinstance(browser_cfg.get("noSandbox"), bool):
         browser_cfg["noSandbox"] = True
 
-    # Ensure the default agent model is OpenAI-based so users don't fall back to image defaults
-    # such as anthropic/claude-opus-* when no anthropic auth is configured.
-    desired_model = (
-        os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", "gpt-5.3-chat").strip()
-        or "gpt-5.3-chat"
+    # Ensure users always get the intended provider set: the original OpenAI models
+    # remain available, and the DashScope-compatible model set is added alongside them.
+    desired_model = _normalize_model_ref(
+        os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", _default_primary_model_ref()),
+        dashscope_model_ids=DEFAULT_DASHSCOPE_MODEL_IDS,
+    ) or _default_primary_model_ref()
+
+    allowed_models_raw = split_csv_values(os.getenv("OPENCLAW_ALLOWED_MODELS", ""))
+    normalized_allowed_model_refs = [
+        ref
+        for ref in (
+            _normalize_model_ref(model_ref, dashscope_model_ids=DEFAULT_DASHSCOPE_MODEL_IDS)
+            for model_ref in allowed_models_raw
+        )
+        if ref
+    ]
+
+    dashscope_api_key = _resolve_dashscope_api_key()
+
+    openai_model_ids = _provider_model_ids(
+        normalized_allowed_model_refs,
+        provider="openai",
+        default_ids=DEFAULT_OPENAI_MODEL_IDS,
     )
-    if "/" not in desired_model:
-        desired_model = f"openai/{desired_model}"
-    allowed_models = split_csv_values(os.getenv("OPENCLAW_ALLOWED_MODELS", ""))
-    allowed_models = [m if "/" in m else f"openai/{m}" for m in allowed_models]
+    dashscope_model_ids = (
+        _provider_model_ids(
+            normalized_allowed_model_refs,
+            provider="dashscope",
+            default_ids=DEFAULT_DASHSCOPE_MODEL_IDS,
+        )
+        if dashscope_api_key
+        else []
+    )
+
+    if desired_model.startswith("openai/"):
+        desired_model_id = desired_model.split("/", 1)[1].strip()
+        if desired_model_id and desired_model_id not in openai_model_ids:
+            openai_model_ids.insert(0, desired_model_id)
+    elif desired_model.startswith("dashscope/") and dashscope_api_key:
+        desired_model_id = desired_model.split("/", 1)[1].strip()
+        if desired_model_id and desired_model_id not in dashscope_model_ids:
+            dashscope_model_ids.insert(0, desired_model_id)
+    elif desired_model.startswith("dashscope/") and not dashscope_api_key:
+        desired_model = "openai/gpt-5.3-chat"
+
+    allowed_models = [
+        *[f"openai/{model_id}" for model_id in openai_model_ids],
+        *[f"dashscope/{model_id}" for model_id in dashscope_model_ids],
+    ]
 
     agents = cfg.get("agents")
     if not isinstance(agents, dict):
@@ -1063,41 +1170,18 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
     if not isinstance(models_cfg, dict):
         models_cfg = {}
         defaults["models"] = models_cfg
-    allowed_openai_refs = {m for m in allowed_models if isinstance(m, str) and m.startswith("openai/")}
-    if allowed_openai_refs:
-        stale_refs = [
-            ref
-            for ref in list(models_cfg.keys())
-            if isinstance(ref, str) and ref.startswith("openai/") and ref not in allowed_openai_refs
-        ]
-        for ref in stale_refs:
-            models_cfg.pop(ref, None)
+    stale_refs = [
+        ref
+        for ref in list(models_cfg.keys())
+        if isinstance(ref, str)
+        and (ref.startswith("openai/") or ref.startswith("dashscope/"))
+        and ref not in allowed_models
+    ]
+    for ref in stale_refs:
+        models_cfg.pop(ref, None)
     if isinstance(primary, str) and primary and primary not in models_cfg:
         models_cfg[primary] = {}
 
-    normalized_openai_model_ids = []
-    for model_ref in allowed_models:
-        if not isinstance(model_ref, str) or not model_ref.strip():
-            continue
-        ref = model_ref.strip()
-        if "/" in ref:
-            provider, model_id = ref.split("/", 1)
-            if provider.strip().lower() != "openai":
-                continue
-            candidate = model_id.strip()
-        else:
-            candidate = ref
-        if candidate and candidate not in normalized_openai_model_ids:
-            normalized_openai_model_ids.append(candidate)
-    if isinstance(primary, str) and primary.startswith("openai/"):
-        primary_model_id = primary.split("/", 1)[1].strip()
-        if primary_model_id and primary_model_id not in normalized_openai_model_ids:
-            normalized_openai_model_ids.insert(0, primary_model_id)
-    if not normalized_openai_model_ids:
-        normalized_openai_model_ids = [desired_model.split("/", 1)[1]]
-
-    # Force OpenAI requests over HTTP/SSE via configured endpoint.
-    # This avoids hardcoded direct OpenAI WebSocket routing when using gateway HTTP proxy endpoints.
     models_root = cfg.get("models")
     if not isinstance(models_root, dict):
         models_root = {}
@@ -1106,6 +1190,7 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
     if not isinstance(providers, dict):
         providers = {}
         models_root["providers"] = providers
+
     openai_provider = providers.get("openai")
     if not isinstance(openai_provider, dict):
         openai_provider = {}
@@ -1126,27 +1211,55 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
             "contextWindow": 200000,
             "maxTokens": 32768,
         }
-        for model_id in normalized_openai_model_ids
+        for model_id in openai_model_ids
     ]
     providers["openai"] = openai_provider
 
-    for model_id in normalized_openai_model_ids:
-        model_ref = f"openai/{model_id}"
-        model_entry = models_cfg.get(model_ref)
-        if not isinstance(model_entry, dict):
-            model_entry = {}
-            models_cfg[model_ref] = model_entry
-        params = model_entry.get("params")
-        if not isinstance(params, dict):
-            params = {}
-            model_entry["params"] = params
-        params.setdefault("transport", "sse")
-        params.setdefault("openaiWsWarmup", False)
-        if not _model_supports_reasoning(model_id, openai_api):
-            # Guard against provider/model combos that reject reasoning controls
-            # (e.g. chat/completions-compatible Kimi and *-chat models).
-            params.pop("reasoningEffort", None)
-            params.pop("reasoningSummary", None)
+    provider_models = {
+        "openai": (openai_model_ids, openai_api),
+    }
+    if dashscope_api_key:
+        dashscope_provider = providers.get("dashscope")
+        if not isinstance(dashscope_provider, dict):
+            dashscope_provider = {}
+        dashscope_provider["baseUrl"] = _normalize_openai_compatible_base_url(
+            os.getenv("OPENCLAW_DASHSCOPE_COMPAT_ENDPOINT", DEFAULT_DASHSCOPE_COMPAT_ENDPOINT),
+            DEFAULT_DASHSCOPE_COMPAT_ENDPOINT,
+        )
+        dashscope_provider["api"] = "openai-completions"
+        dashscope_provider["apiKey"] = dashscope_api_key
+        dashscope_provider["models"] = [
+            {
+                "id": model_id,
+                "name": model_id,
+                "reasoning": False,
+                "input": ["text", "image"],
+                "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                "contextWindow": 200000,
+                "maxTokens": 32768,
+            }
+            for model_id in dashscope_model_ids
+        ]
+        providers["dashscope"] = dashscope_provider
+        provider_models["dashscope"] = (dashscope_model_ids, "openai-completions")
+    else:
+        providers.pop("dashscope", None)
+    for provider_id, (model_ids, provider_api) in provider_models.items():
+        for model_id in model_ids:
+            model_ref = f"{provider_id}/{model_id}"
+            model_entry = models_cfg.get(model_ref)
+            if not isinstance(model_entry, dict):
+                model_entry = {}
+                models_cfg[model_ref] = model_entry
+            params = model_entry.get("params")
+            if not isinstance(params, dict):
+                params = {}
+                model_entry["params"] = params
+            params.setdefault("transport", "sse")
+            params.setdefault("openaiWsWarmup", False)
+            if not _model_supports_reasoning(model_id, provider_api):
+                params.pop("reasoningEffort", None)
+                params.pop("reasoningSummary", None)
 
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=True, indent=2)
@@ -1648,7 +1761,7 @@ def ensure_container_exists(docker, identity, container):
         users_root=users_root,
         default_key=os.getenv("OPENCLAW_DEFAULT_OPENAI_KEY", "").strip(),
         default_endpoint=os.getenv("OPENCLAW_DEFAULT_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
-        default_model=os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", "gpt-5.3-chat"),
+        default_model=os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", _default_primary_model_ref()),
         gateway_token=gateway_token,
     )
     spec = _build_container_spec(container=container, identity=identity, artifacts=artifacts)

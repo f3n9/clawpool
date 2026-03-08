@@ -30,9 +30,11 @@ This directory contains base deployment assets for enterprise OpenClaw.
 - `OPENCLAW_FORCE_RESPONSES_STORE` (recommended: `true` when using OpenAI-compatible Responses proxy endpoints to avoid multi-turn item-id 400 errors)
 - `OPENCLAW_DEFAULT_OPENAI_KEY`
 - `OPENCLAW_DEFAULT_OPENAI_ENDPOINT`
+- `OPENCLAW_DASHSCOPE_COMPAT_ENDPOINT` (optional override for the DashScope-compatible provider endpoint)
+- `OPENCLAW_DASHSCOPE_API_KEY` (required to enable the DashScope-compatible provider and MiniMax default)
 - `OPENCLAW_OPENAI_API` (optional override: `openai-responses` or `openai-completions`)
-- `OPENCLAW_ALLOWED_MODELS` (must include only approved models, e.g. `gpt-5.4,gpt-5.3-codex,gpt-5.3-chat`)
-- `OPENCLAW_DEFAULT_OPENAI_MODEL` (must be one of `OPENCLAW_ALLOWED_MODELS`)
+- `OPENCLAW_ALLOWED_MODELS` (optional approved-model override; provider-prefixed refs such as `dashscope/MiniMax-M2.5` are supported)
+- `OPENCLAW_DEFAULT_OPENAI_MODEL` (optional explicit default; when omitted and `OPENCLAW_DASHSCOPE_API_KEY` is set, defaults to `dashscope/MiniMax-M2.5`)
 - `OPENCLAW_ALLOWED_EMAIL_DOMAINS`, `OPENCLAW_ALLOWED_GROUPS` (optional access controls for JIT provisioning)
 - `OPENCLAW_IDLE_MINUTES`
 - `OPENCLAW_BASE_CPU`, `OPENCLAW_BASE_MEM`
