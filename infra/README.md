@@ -61,6 +61,8 @@ It validates:
 
 The custom image in `infra/docker-build` now defaults to a broad toolset for OpenClaw agent tasks.
 
+The runtime container still runs as `node`, but `node` now has passwordless `sudo` with full root access inside this image. This is intended for interactive package/tool bootstrap inside a user container, typically with `sudo apt-get update && sudo apt-get install ...`.
+
 Tool groups:
 - OCR: `tesseract`, `tesseract-ocr-eng`, `tesseract-ocr-chi-sim`
 - Office/PDF: `libreoffice`, `pandoc`, `poppler-utils`, `ghostscript`, `qpdf`, `mupdf-tools`, `wkhtmltopdf`, `ocrmypdf`

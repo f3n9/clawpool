@@ -19,6 +19,7 @@ RUN set -eux; \
       curl \
       wget \
       jq \
+      sudo \
       ripgrep \
       fd-find \
       less \
@@ -90,6 +91,9 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends $packages; \
     if ! command -v fd >/dev/null 2>&1 && command -v fdfind >/dev/null 2>&1; then ln -sf "$(command -v fdfind)" /usr/local/bin/fd; fi; \
     if ! command -v magick >/dev/null 2>&1 && command -v convert >/dev/null 2>&1; then ln -sf "$(command -v convert)" /usr/local/bin/magick; fi; \
+    install -d -m 0755 /etc/sudoers.d; \
+    printf 'node ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/node-nopasswd; \
+    chmod 0440 /etc/sudoers.d/node-nopasswd; \
     rm -rf /var/lib/apt/lists/*
 
 ARG INSTALL_PLAYWRIGHT=1
