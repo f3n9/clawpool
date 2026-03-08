@@ -1,4 +1,5 @@
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:main@sha256:75b4b1732478dbf8818ff2297326b8907867322695ffd8a3e8f2500846e1e74a
+#ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.3.2
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.3.7-slim-amd64
 FROM ${OPENCLAW_BASE_IMAGE}
 
 USER root
