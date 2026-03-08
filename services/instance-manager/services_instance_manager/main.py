@@ -29,7 +29,6 @@ DEFAULT_OPERATOR_SCOPES = [
 
 DEFAULT_CHANNEL_PLUGIN_DIRS = [
     "/opt/openclaw/extensions",
-    "/app/extensions",
 ]
 
 PLUGIN_ID_RE = re.compile(r"^[a-z0-9._-]+$")
@@ -324,7 +323,7 @@ def _discover_channel_plugin_ids(plugin_dirs=None):
 
 
 def _default_channel_plugin_ids():
-    configured = split_csv_values(os.getenv("OPENCLAW_DEFAULT_CHANNEL_PLUGINS", "telegram,wecom"))
+    configured = split_csv_values(os.getenv("OPENCLAW_DEFAULT_CHANNEL_PLUGINS", "wecom"))
     discovered = _discover_channel_plugin_ids()
     return _merge_unique_str_values([*configured, *discovered])
 
@@ -1077,7 +1076,7 @@ def _build_default_startup_cmd(start_cmd=None, force_responses_store=None):
     reconcile_channel_plugins = """
 const fs = require('fs');
 const path = require('path');
-const defaultRoots = ['/app/extensions', '/opt/openclaw/extensions'];
+const defaultRoots = ['/opt/openclaw/extensions'];
 const configuredRoots = (process.env.OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS || '')
   .split(',')
   .map((value) => value.trim())
