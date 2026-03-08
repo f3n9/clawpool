@@ -1076,6 +1076,7 @@ def _build_default_startup_cmd(start_cmd=None, force_responses_store=None):
     reconcile_channel_plugins = """
 const fs = require('fs');
 const path = require('path');
+const builtInChannelRoot = '/app/extensions';
 const defaultRoots = ['/opt/openclaw/extensions'];
 const configuredRoots = (process.env.OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS || '')
   .split(',')
@@ -1101,6 +1102,32 @@ for (const root of pluginRoots) {
   } catch (error) {
   }
 }
+const builtInChannelIds = [];
+for (const channelId of (() => {
+  try {
+    if (!fs.existsSync(builtInChannelRoot) || !fs.statSync(builtInChannelRoot).isDirectory()) {
+      return [];
+    }
+    return fs.readdirSync(builtInChannelRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && validPluginId(entry.name))
+      .filter((entry) => {
+        const channelDir = path.join(builtInChannelRoot, entry.name);
+        return [
+          path.join(channelDir, 'src', 'channel.ts'),
+          path.join(channelDir, 'src', 'channel.js'),
+          path.join(channelDir, 'channel.ts'),
+          path.join(channelDir, 'channel.js'),
+        ].some((candidate) => fs.existsSync(candidate));
+      })
+      .map((entry) => entry.name);
+  } catch (error) {
+    return [];
+  }
+})()) {
+  if (!builtInChannelIds.includes(channelId)) {
+    builtInChannelIds.push(channelId);
+  }
+}
 let cfg = {};
 try {
   if (fs.existsSync('RUNTIME_CFG')) {
@@ -1118,6 +1145,20 @@ if (!cfg.plugins || typeof cfg.plugins !== 'object' || Array.isArray(cfg.plugins
 if (!cfg.plugins.entries || typeof cfg.plugins.entries !== 'object' || Array.isArray(cfg.plugins.entries)) {
   cfg.plugins.entries = {};
 }
+if (!cfg.channels || typeof cfg.channels !== 'object' || Array.isArray(cfg.channels)) {
+  cfg.channels = {};
+}
+for (const channelId of builtInChannelIds) {
+  let channelCfg = cfg.channels[channelId];
+  if (!channelCfg || typeof channelCfg !== 'object' || Array.isArray(channelCfg)) {
+    channelCfg = {};
+    cfg.channels[channelId] = channelCfg;
+  }
+  if (typeof channelCfg.enabled !== 'boolean') {
+    channelCfg.enabled = true;
+  }
+  delete cfg.plugins.entries[channelId];
+}
 for (const pluginId of [...new Set([...explicitPluginIds, ...discoveredPluginIds])]) {
   let entry = cfg.plugins.entries[pluginId];
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
@@ -1129,8 +1170,7 @@ for (const pluginId of [...new Set([...explicitPluginIds, ...discoveredPluginIds
   }
 }
 fs.mkdirSync(path.dirname('RUNTIME_CFG'), { recursive: true });
-fs.writeFileSync('RUNTIME_CFG', JSON.stringify(cfg, null, 2) + '
-');
+fs.writeFileSync('RUNTIME_CFG', JSON.stringify(cfg, null, 2) + '\\n');
 """.replace("RUNTIME_CFG", runtime_cfg)
     if force_responses_store is None:
         force_responses_store = _should_force_openai_responses_store()

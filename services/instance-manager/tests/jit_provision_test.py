@@ -308,6 +308,8 @@ class JITProvisionTests(unittest.TestCase):
             self.assertIn("openai-responses.js", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("openai-responses-shared.js", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("/opt/openclaw/extensions", cmd[2] if len(cmd) > 2 else "")
+            self.assertIn("/app/extensions", cmd[2] if len(cmd) > 2 else "")
+            self.assertIn("channels[channelId]", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("store: true", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("thinkingSignature", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("textSignature", cmd[2] if len(cmd) > 2 else "")
@@ -619,7 +621,8 @@ class JITProvisionTests(unittest.TestCase):
             cmd = spec.get("Cmd", [])
             self.assertEqual(cmd[:2], ["sh", "-lc"])
             self.assertIn("/opt/openclaw/extensions", cmd[2] if len(cmd) > 2 else "")
-            self.assertNotIn("/app/extensions", cmd[2] if len(cmd) > 2 else "")
+            self.assertIn("/app/extensions", cmd[2] if len(cmd) > 2 else "")
+            self.assertIn("channels[channelId]", cmd[2] if len(cmd) > 2 else "")
 
     def test_channel_plugins_default_enabled_without_overriding_explicit_false(self):
         docker = FakeDocker()
@@ -711,16 +714,20 @@ class JITProvisionTests(unittest.TestCase):
             self.assertIn("good-plugin", entries)
             self.assertNotIn("Bad Plugin", entries)
 
-    def test_default_startup_cmd_reconciles_only_bundled_extra_plugin_roots(self):
+    def test_default_startup_cmd_reconciles_built_in_channels_and_extra_plugins(self):
         cmd = _build_default_startup_cmd()
         self.assertEqual(cmd[:2], ["sh", "-lc"])
         script = cmd[2]
         self.assertIn("/opt/openclaw/extensions", script)
-        self.assertNotIn("/app/extensions", script)
+        self.assertIn("/app/extensions", script)
+        self.assertIn("channel.ts", script)
         self.assertIn("OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS", script)
         self.assertIn("openclaw.json", script)
         self.assertIn("plugins.entries", script)
+        self.assertIn("channels[channelId]", script)
+        self.assertIn("delete cfg.plugins.entries[channelId]", script)
         self.assertIn("enabled = true", script)
+        self.assertIn("\\n", script)
 
     def test_custom_startup_cmd_still_runs_plugin_reconciliation(self):
         docker = FakeDocker()
@@ -744,7 +751,8 @@ class JITProvisionTests(unittest.TestCase):
             self.assertEqual(cmd[:2], ["sh", "-lc"])
             script = cmd[2] if len(cmd) > 2 else ""
             self.assertIn("/opt/openclaw/extensions", script)
-            self.assertNotIn("/app/extensions", script)
+            self.assertIn("/app/extensions", script)
+            self.assertIn("channels[channelId]", script)
             self.assertIn("openclaw.json", script)
             self.assertIn("exec node custom-entry.mjs", script)
 
@@ -886,7 +894,8 @@ class JITProvisionTests(unittest.TestCase):
             self.assertEqual(cmd[:2], ["sh", "-lc"])
             script = cmd[2] if len(cmd) > 2 else ""
             self.assertIn("/opt/openclaw/extensions", script)
-            self.assertNotIn("/app/extensions", script)
+            self.assertIn("/app/extensions", script)
+            self.assertIn("channels[channelId]", script)
             self.assertNotIn("store: true", script)
 
     def test_custom_startup_cmd_overrides_default_store_patch(self):
@@ -912,7 +921,8 @@ class JITProvisionTests(unittest.TestCase):
             self.assertEqual(cmd[:2], ["sh", "-lc"])
             script = cmd[2] if len(cmd) > 2 else ""
             self.assertIn("/opt/openclaw/extensions", script)
-            self.assertNotIn("/app/extensions", script)
+            self.assertIn("/app/extensions", script)
+            self.assertIn("channels[channelId]", script)
             self.assertIn("store: true", script)
             self.assertIn("exec node openclaw.mjs gateway --allow-unconfigured", script)
 
