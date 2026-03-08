@@ -8,6 +8,7 @@ import json
 from services_instance_manager.main import (
     CONSOLE_STATIC_ROOT,
     DockerAPIError,
+    Handler,
     _build_default_startup_cmd,
     _parse_console_control,
     _inject_trusted_proxy_user_header_if_needed,
@@ -58,6 +59,13 @@ class JITProvisionTests(unittest.TestCase):
         self.assertTrue(is_browser_navigation_request("GET", {"Accept": "text/html,application/xhtml+xml"}))
         self.assertFalse(is_browser_navigation_request("POST", {"Accept": "text/html"}))
         self.assertFalse(is_browser_navigation_request("GET", {"Accept": "application/json"}))
+
+    def test_resolve_uses_bootstrap_wait_page_for_browser_navigation(self):
+        handler = Handler.__new__(Handler)
+        handler.command = "GET"
+        handler.headers = {"Accept": "text/html,application/xhtml+xml"}
+        self.assertTrue(handler._should_use_bootstrap_wait_page("/resolve"))
+        self.assertFalse(handler._should_use_bootstrap_wait_page("/__openclaw__/bootstrap-status"))
 
     def test_is_retryable_upstream_error(self):
         self.assertTrue(is_retryable_upstream_error(ConnectionRefusedError(111, "Connection refused")))

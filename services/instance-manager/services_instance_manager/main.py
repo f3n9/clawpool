@@ -1669,7 +1669,7 @@ class Handler(BaseHTTPRequestHandler):
         self._html(HTTPStatus.OK, html)
 
     def _should_use_bootstrap_wait_page(self, parsed_path):
-        if parsed_path in {"/health", "/resolve", "/__openclaw__/bootstrap-status"}:
+        if parsed_path in {"/health", "/__openclaw__/bootstrap-status"}:
             return False
         if is_websocket_upgrade(self.headers):
             return False
