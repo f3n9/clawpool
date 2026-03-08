@@ -669,6 +669,41 @@ class JITProvisionTests(unittest.TestCase):
             self.assertEqual(params.get("transport"), "sse")
             self.assertEqual(params.get("openaiWsWarmup"), False)
 
+    def test_migrates_existing_managed_primary_to_dashscope_default(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1012")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
+                "OPENCLAW_DEFAULT_OPENAI_MODEL": "dashscope/MiniMax-M2.5",
+                "OPENCLAW_DASHSCOPE_API_KEY": "dashscope-test-key",
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1012/runtime", exist_ok=True)
+            with open(f"{tmpdir}/u1012/runtime/openclaw.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "agents": {
+                            "defaults": {
+                                "model": {"primary": "openai/gpt-5.4"},
+                            }
+                        }
+                    },
+                    f,
+                )
+            status = ensure_container_exists(docker, identity="u1012", container="openclaw-u1012")
+            self.assertEqual(status, "existing")
+            with open(f"{tmpdir}/u1012/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertEqual(
+                cfg.get("agents", {}).get("defaults", {}).get("model", {}).get("primary"),
+                "dashscope/MiniMax-M2.5",
+            )
+
     def test_skips_dashscope_provider_when_key_missing(self):
         docker = FakeDocker()
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(

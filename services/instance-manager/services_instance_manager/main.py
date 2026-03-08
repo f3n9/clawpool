@@ -814,6 +814,14 @@ def _resolve_dashscope_api_key():
     return os.getenv("OPENCLAW_DASHSCOPE_API_KEY", "").strip()
 
 
+def _legacy_managed_primary_refs():
+    return [
+        "openai/gpt-5.3-chat",
+        "openai/gpt-5.4",
+        "dashscope/MiniMax-M2.5",
+    ]
+
+
 def _default_primary_model_ref():
     if _resolve_dashscope_api_key():
         return "dashscope/MiniMax-M2.5"
@@ -1156,11 +1164,14 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
         defaults["model"] = model_cfg
 
     primary = model_cfg.get("primary")
+    explicit_default_model = os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", "").strip()
     should_set_primary = not isinstance(primary, str) or not primary.strip()
     if not should_set_primary and isinstance(primary, str):
         if primary.startswith("anthropic/"):
             should_set_primary = True
         elif allowed_models and primary not in allowed_models:
+            should_set_primary = True
+        elif explicit_default_model and primary != desired_model and primary in _legacy_managed_primary_refs():
             should_set_primary = True
     if should_set_primary:
         model_cfg["primary"] = desired_model
