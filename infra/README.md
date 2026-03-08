@@ -89,3 +89,10 @@ Example local build:
 Example slimmer build:
 
 - `docker build -t yx-openclaw:lite --build-arg INSTALL_LIBREOFFICE=0 --build-arg INSTALL_OCR=0 infra/docker-build`
+
+## Switching Runtime Images
+
+- Update the default runtime image/tag for future JIT-provisioned users and refresh `instance-manager`:
+  - `ops/set-openclaw-image.sh --image yx-openclaw --tag 20260308`
+- Also recreate existing `openclaw-*` containers onto the new image while preserving their binds/env/labels/network and prior running/stopped state:
+  - `ops/set-openclaw-image.sh --image yx-openclaw --tag 20260308 --recreate-existing`

@@ -85,6 +85,20 @@ docker compose --env-file infra/.env -f infra/docker-compose.base.yml up -d --bu
 docker compose --env-file infra/.env -f infra/docker-compose.base.yml ps
 ```
 
+## 切换 OpenClaw 镜像
+
+- 仅更新默认镜像（供后续新建用户容器使用，并刷新 `instance-manager`）：
+
+```bash
+ops/set-openclaw-image.sh --image yx-openclaw --tag 20260308
+```
+
+- 更新默认镜像，并将现有 `openclaw-*` 容器迁移到新镜像：
+
+```bash
+ops/set-openclaw-image.sh --image yx-openclaw --tag 20260308 --recreate-existing
+```
+
 ## 自定义镜像能力
 
 - 当前自定义镜像默认内置 OCR、Office/PDF 转换、图片处理、音视频处理、网页抓取、压缩归档、源码分析工具。
