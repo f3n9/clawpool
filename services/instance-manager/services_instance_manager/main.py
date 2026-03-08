@@ -610,9 +610,9 @@ def _warm_local_pairing(docker, container):
     cmd = [
         "sh",
         "-lc",
-        "openclaw status >/dev/null 2>&1 || true; openclaw devices approve --latest >/dev/null 2>&1 || true",
+        "for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90; do openclaw status >/dev/null 2>&1 || true; if openclaw devices approve --latest >/dev/null 2>&1; then exit 0; fi; sleep 1; done; exit 0",
     ]
-    timeout_seconds = int(os.getenv("OPENCLAW_LOCAL_PAIRING_WARMUP_TIMEOUT_SECONDS", "20"))
+    timeout_seconds = int(os.getenv("OPENCLAW_LOCAL_PAIRING_WARMUP_TIMEOUT_SECONDS", "120"))
     try:
         exec_run(container, cmd, user="node", timeout_seconds=timeout_seconds)
     except Exception as exc:
@@ -670,6 +670,27 @@ def _merge_unique_str_values(values):
             continue
         out.append(item)
     return out
+
+
+
+def _public_key_raw_base64url_from_pem(public_key_pem):
+    if not isinstance(public_key_pem, str):
+        return ""
+    body = "".join(
+        line.strip()
+        for line in public_key_pem.splitlines()
+        if line and not line.startswith("-----")
+    )
+    if not body:
+        return ""
+    try:
+        der = base64.b64decode(body)
+    except Exception:
+        return ""
+    if len(der) < 32:
+        return ""
+    raw = der[-32:]
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
 def _model_supports_reasoning(model_id, openai_api):
@@ -743,6 +764,32 @@ def _repair_local_device_pairing(runtime_dir, uid, gid):
             }
             paired[device_id] = paired_entry
             paired_changed = True
+        else:
+            public_key = _public_key_raw_base64url_from_pem(identity.get("publicKeyPem"))
+            if public_key:
+                paired_entry = {
+                    "deviceId": device_id,
+                    "publicKey": public_key,
+                    "platform": "linux",
+                    "clientId": "gateway-client",
+                    "clientMode": "backend",
+                    "role": "operator",
+                    "roles": ["operator"],
+                    "scopes": list(scopes),
+                    "approvedScopes": list(scopes),
+                    "tokens": {
+                        "operator": {
+                            "token": secrets.token_urlsafe(32),
+                            "role": "operator",
+                            "scopes": list(scopes),
+                            "createdAtMs": now_ms,
+                        }
+                    },
+                    "createdAtMs": now_ms,
+                    "approvedAtMs": now_ms,
+                }
+                paired[device_id] = paired_entry
+                paired_changed = True
 
     if isinstance(paired_entry, dict):
         roles = _merge_unique_str_values([*(paired_entry.get("roles") or []), "operator"])
@@ -1087,6 +1134,7 @@ def _build_default_startup_cmd(start_cmd=None, force_responses_store=None):
     reconcile_channel_plugins = """
 const fs = require('fs');
 const path = require('path');
+const { createRequire } = require('module');
 const builtInChannelRoot = '/app/extensions';
 const defaultRoots = ['/opt/openclaw/extensions'];
 const configuredRoots = (process.env.OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS || '')
@@ -1113,30 +1161,104 @@ for (const root of pluginRoots) {
   } catch (error) {
   }
 }
-const builtInChannelIds = [];
-for (const channelId of (() => {
+const canResolveDependency = (pluginDir, dependency) => {
+  if (!dependency || typeof dependency !== 'string') {
+    return false;
+  }
+  try {
+    const pluginRequire = createRequire(path.join(pluginDir, 'package.json'));
+    pluginRequire.resolve(dependency);
+    return true;
+  } catch (error) {
+    try {
+      require.resolve(dependency, { paths: [pluginDir, '/app'] });
+      return true;
+    } catch (innerError) {
+      return false;
+    }
+  }
+};
+const readPluginPackageJson = (pluginDir) => {
+  const packageJsonPath = path.join(pluginDir, 'package.json');
+  if (!fs.existsSync(packageJsonPath)) {
+    return null;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  } catch (error) {
+    return null;
+  }
+};
+const resolvePluginEntrypoint = (pluginDir, packageJson) => {
+  const openclaw = packageJson && typeof packageJson === 'object' ? packageJson.openclaw : null;
+  const extensions = openclaw && Array.isArray(openclaw.extensions) ? openclaw.extensions : [];
+  const configuredEntrypoint = extensions.find((candidate) => typeof candidate === 'string' && candidate.trim());
+  const candidates = [
+    configuredEntrypoint ? path.resolve(pluginDir, configuredEntrypoint) : null,
+    path.join(pluginDir, 'index.ts'),
+    path.join(pluginDir, 'index.js'),
+    path.join(pluginDir, 'src', 'index.ts'),
+    path.join(pluginDir, 'src', 'index.js'),
+    path.join(pluginDir, 'src', 'channel.ts'),
+    path.join(pluginDir, 'src', 'channel.js'),
+    path.join(pluginDir, 'channel.ts'),
+    path.join(pluginDir, 'channel.js'),
+  ];
+  return candidates.find((candidate) => typeof candidate === 'string' && fs.existsSync(candidate)) || null;
+};
+const isBuiltInChannelPlugin = (pluginDir, packageJson) => {
+  const openclaw = packageJson && typeof packageJson === 'object' ? packageJson.openclaw : null;
+  const channel = openclaw && typeof openclaw === 'object' ? openclaw.channel : null;
+  if (channel && validPluginId(channel.id)) {
+    return true;
+  }
+  const description = (packageJson && typeof packageJson.description === 'string')
+    ? packageJson.description.toLowerCase()
+    : '';
+  const entrypoint = resolvePluginEntrypoint(pluginDir, packageJson);
+  if (!entrypoint) {
+    return description.includes('channel plugin');
+  }
+  try {
+    const source = fs.readFileSync(entrypoint, 'utf8');
+    return source.includes('registerChannel(') || description.includes('channel plugin');
+  } catch (error) {
+    return description.includes('channel plugin');
+  }
+};
+const allBuiltInChannelIds = [];
+const loadableBuiltInChannelIds = [];
+for (const channelEntry of (() => {
   try {
     if (!fs.existsSync(builtInChannelRoot) || !fs.statSync(builtInChannelRoot).isDirectory()) {
       return [];
     }
     return fs.readdirSync(builtInChannelRoot, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && validPluginId(entry.name))
-      .filter((entry) => {
+      .map((entry) => {
         const channelDir = path.join(builtInChannelRoot, entry.name);
-        return [
-          path.join(channelDir, 'src', 'channel.ts'),
-          path.join(channelDir, 'src', 'channel.js'),
-          path.join(channelDir, 'channel.ts'),
-          path.join(channelDir, 'channel.js'),
-        ].some((candidate) => fs.existsSync(candidate));
+        const packageJson = readPluginPackageJson(channelDir);
+        if (!isBuiltInChannelPlugin(channelDir, packageJson)) {
+          return null;
+        }
+        const dependencies = packageJson && typeof packageJson === 'object'
+          ? Object.keys(packageJson.dependencies || {})
+          : [];
+        return {
+          channelId: entry.name,
+          loadable: dependencies.every((dependency) => canResolveDependency(channelDir, dependency)),
+        };
       })
-      .map((entry) => entry.name);
+      .filter(Boolean);
   } catch (error) {
     return [];
   }
 })()) {
-  if (!builtInChannelIds.includes(channelId)) {
-    builtInChannelIds.push(channelId);
+  if (!allBuiltInChannelIds.includes(channelEntry.channelId)) {
+    allBuiltInChannelIds.push(channelEntry.channelId);
+  }
+  if (channelEntry.loadable && !loadableBuiltInChannelIds.includes(channelEntry.channelId)) {
+    loadableBuiltInChannelIds.push(channelEntry.channelId);
   }
 }
 let cfg = {};
@@ -1156,21 +1278,47 @@ if (!cfg.plugins || typeof cfg.plugins !== 'object' || Array.isArray(cfg.plugins
 if (!cfg.plugins.entries || typeof cfg.plugins.entries !== 'object' || Array.isArray(cfg.plugins.entries)) {
   cfg.plugins.entries = {};
 }
+if (!Array.isArray(cfg.plugins.allow)) {
+  cfg.plugins.allow = [];
+}
+if (!cfg.plugins.load || typeof cfg.plugins.load !== 'object' || Array.isArray(cfg.plugins.load)) {
+  cfg.plugins.load = {};
+}
+if (!Array.isArray(cfg.plugins.load.paths)) {
+  cfg.plugins.load.paths = [];
+}
 if (!cfg.channels || typeof cfg.channels !== 'object' || Array.isArray(cfg.channels)) {
   cfg.channels = {};
 }
-for (const channelId of builtInChannelIds) {
-  let channelCfg = cfg.channels[channelId];
-  if (!channelCfg || typeof channelCfg !== 'object' || Array.isArray(channelCfg)) {
-    channelCfg = {};
-    cfg.channels[channelId] = channelCfg;
+cfg.plugins.allow = cfg.plugins.allow.filter((pluginId) => !allBuiltInChannelIds.includes(pluginId));
+cfg.plugins.load.paths = cfg.plugins.load.paths.filter((pluginPath) => {
+  if (typeof pluginPath !== 'string' || !pluginPath.trim()) {
+    return false;
   }
-  if (typeof channelCfg.enabled !== 'boolean') {
-    channelCfg.enabled = true;
+  if (!fs.existsSync(pluginPath.trim())) {
+    return false;
+  }
+  const pluginId = path.basename(pluginPath.trim());
+  return !allBuiltInChannelIds.includes(pluginId);
+});
+for (const channelId of allBuiltInChannelIds) {
+  if (loadableBuiltInChannelIds.includes(channelId)) {
+    let channelCfg = cfg.channels[channelId];
+    if (!channelCfg || typeof channelCfg !== 'object' || Array.isArray(channelCfg)) {
+      channelCfg = {};
+      cfg.channels[channelId] = channelCfg;
+    }
+    if (typeof channelCfg.enabled !== 'boolean') {
+      channelCfg.enabled = true;
+    }
+  } else {
+    delete cfg.channels[channelId];
   }
   delete cfg.plugins.entries[channelId];
 }
-for (const pluginId of [...new Set([...explicitPluginIds, ...discoveredPluginIds])]) {
+const extraPluginIds = [...new Set([...explicitPluginIds, ...discoveredPluginIds])]
+  .filter((pluginId) => !allBuiltInChannelIds.includes(pluginId));
+for (const pluginId of extraPluginIds) {
   let entry = cfg.plugins.entries[pluginId];
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
     entry = {};
@@ -1178,6 +1326,13 @@ for (const pluginId of [...new Set([...explicitPluginIds, ...discoveredPluginIds
   }
   if (typeof entry.enabled !== 'boolean') {
     entry.enabled = true;
+  }
+  if (!cfg.plugins.allow.includes(pluginId)) {
+    cfg.plugins.allow.push(pluginId);
+  }
+  const runtimePluginPath = path.join('/home/node/.openclaw/extensions', pluginId);
+  if (!cfg.plugins.load.paths.includes(runtimePluginPath)) {
+    cfg.plugins.load.paths.push(runtimePluginPath);
   }
 }
 fs.mkdirSync(path.dirname('RUNTIME_CFG'), { recursive: true });
@@ -1427,6 +1582,7 @@ def start_container_if_needed(docker, container, health_timeout_seconds=15, wait
 
     docker.start(container)
     if not wait_for_ready:
+        _warm_local_pairing_async(docker, container)
         return "started"
 
     deadline = time.time() + health_timeout_seconds
@@ -1445,9 +1601,11 @@ def start_container_if_needed(docker, container, health_timeout_seconds=15, wait
                 post_health_status = post_health.get("Status")
                 post_healthy = post_health_status == "healthy"
         if post_healthy:
+            _warm_local_pairing(docker, container)
             return "started"
         elapsed = health_timeout_seconds - (deadline - time.time())
         if post_running and post_health_status in {"starting", None} and elapsed >= running_ready_seconds:
+            _warm_local_pairing(docker, container)
             return "started"
         time.sleep(0.25)
 
@@ -1945,6 +2103,14 @@ class Handler(BaseHTTPRequestHandler):
                 _warm_local_pairing(DOCKER, container)
             else:
                 _warm_local_pairing_async(DOCKER, container)
+        users_root = os.getenv("OPENCLAW_USERS_ROOT", "/srv/openclaw/users")
+        runtime_dir = os.path.join(users_root, identity, "runtime")
+        container_uid = int(os.getenv("OPENCLAW_CONTAINER_UID", "1000"))
+        container_gid = int(os.getenv("OPENCLAW_CONTAINER_GID", "1000"))
+        try:
+            _repair_local_device_pairing(runtime_dir, container_uid, container_gid)
+        except OSError:
+            pass
         runtime = read_container_runtime_state(DOCKER, container)
         emit_identity_audit(
             "identity_routed",

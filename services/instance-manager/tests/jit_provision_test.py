@@ -761,6 +761,20 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("plugins.entries", script)
         self.assertIn("channels[channelId]", script)
         self.assertIn("delete cfg.plugins.entries[channelId]", script)
+        self.assertIn("plugins.allow", script)
+        self.assertIn("plugins.load.paths", script)
+        self.assertIn("createRequire", script)
+        self.assertIn("package.json", script)
+        self.assertIn("dependencies", script)
+        self.assertIn("index.ts", script)
+        self.assertIn("registerChannel(", script)
+        self.assertIn("channel plugin", script)
+        self.assertIn("loadableBuiltInChannelIds", script)
+        self.assertIn("delete cfg.channels[channelId]", script)
+        self.assertIn("cfg.plugins.allow = cfg.plugins.allow.filter", script)
+        self.assertIn("cfg.plugins.load.paths = cfg.plugins.load.paths.filter", script)
+        self.assertIn("fs.existsSync(pluginPath.trim())", script)
+        self.assertIn("!allBuiltInChannelIds.includes(pluginId)", script)
         self.assertIn("enabled = true", script)
         self.assertIn("\\n", script)
 
@@ -1096,6 +1110,46 @@ class JITProvisionTests(unittest.TestCase):
             self.assertEqual(paired.get("dev-2", {}).get("role"), "operator")
             self.assertIn("operator.admin", paired.get("dev-2", {}).get("scopes", []))
             self.assertEqual(pending, {})
+
+    def test_synthesizes_local_pairing_from_device_identity_without_pending(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = f"{tmpdir}/runtime"
+            os.makedirs(f"{runtime_dir}/identity", exist_ok=True)
+            os.makedirs(f"{runtime_dir}/devices", exist_ok=True)
+            with open(f"{runtime_dir}/identity/device.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "version": 1,
+                        "deviceId": "dev-3",
+                        "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEALjkylneJBf72gsY1K5962v1I5C3jjOCTeakT9rKS+ho=\n-----END PUBLIC KEY-----\n",
+                    },
+                    f,
+                )
+
+            instance_manager_main._repair_local_device_pairing(runtime_dir, 1000, 1000)
+
+            with open(f"{runtime_dir}/devices/paired.json", "r", encoding="utf-8") as f:
+                paired = json.load(f)
+
+            self.assertIn("dev-3", paired)
+            self.assertEqual(paired.get("dev-3", {}).get("role"), "operator")
+            self.assertEqual(
+                paired.get("dev-3", {}).get("publicKey"),
+                "LjkylneJBf72gsY1K5962v1I5C3jjOCTeakT9rKS-ho",
+            )
+            for required in [
+                "operator.admin",
+                "operator.read",
+                "operator.write",
+                "operator.approvals",
+                "operator.pairing",
+            ]:
+                self.assertIn(required, paired.get("dev-3", {}).get("scopes", []))
+                self.assertIn(
+                    required,
+                    paired.get("dev-3", {}).get("tokens", {}).get("operator", {}).get("scopes", []),
+                )
+
 
     def test_fails_when_default_key_missing_for_jit(self):
         docker = FakeDocker()
