@@ -630,6 +630,17 @@ def _warm_local_pairing(docker, container):
         )
 
 
+def _warm_local_pairing_async(docker, container):
+    thread = threading.Thread(
+        target=_warm_local_pairing,
+        args=(docker, container),
+        daemon=True,
+        name=f"pairing-warmup-{container}",
+    )
+    thread.start()
+    return thread
+
+
 def _read_json_object(path):
     if not os.path.exists(path):
         return {}
@@ -1930,7 +1941,10 @@ class Handler(BaseHTTPRequestHandler):
 
         lifecycle = classify_instance_lifecycle(provision_state, startup_state)
         if provision_state == "created" or startup_state == "started":
-            _warm_local_pairing(DOCKER, container)
+            if wait_for_ready:
+                _warm_local_pairing(DOCKER, container)
+            else:
+                _warm_local_pairing_async(DOCKER, container)
         runtime = read_container_runtime_state(DOCKER, container)
         emit_identity_audit(
             "identity_routed",

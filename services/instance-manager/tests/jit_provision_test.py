@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 import json
 
+import services_instance_manager.main as instance_manager_main
 from services_instance_manager.main import (
     CONSOLE_STATIC_ROOT,
     DockerAPIError,
@@ -66,6 +67,40 @@ class JITProvisionTests(unittest.TestCase):
         handler.headers = {"Accept": "text/html,application/xhtml+xml"}
         self.assertTrue(handler._should_use_bootstrap_wait_page("/resolve"))
         self.assertFalse(handler._should_use_bootstrap_wait_page("/__openclaw__/bootstrap-status"))
+
+    def test_nonblocking_resolve_backgrounds_local_pairing_warmup(self):
+        handler = Handler.__new__(Handler)
+        handler.command = "GET"
+        handler.headers = {"X-Forwarded-Email": "fyue@yinxiang.com", "Accept": "text/html"}
+        handler.client_address = ("127.0.0.1", 12345)
+
+        fake_thread = unittest.mock.Mock()
+        with patch.dict(os.environ, {"OPENCLAW_JIT_PROVISION": "false"}, clear=False), patch(
+            "services_instance_manager.main.is_identity_allowed", return_value=True
+        ), patch(
+            "services_instance_manager.main.start_container_if_needed", return_value="started"
+        ), patch(
+            "services_instance_manager.main._write_last_active_marker"
+        ), patch(
+            "services_instance_manager.main.read_container_runtime_state",
+            return_value={"running": True, "health": "starting"},
+        ), patch(
+            "services_instance_manager.main.emit_identity_audit"
+        ), patch(
+            "services_instance_manager.main._warm_local_pairing"
+        ) as warm_pairing, patch.object(
+            instance_manager_main.THROTTLE, "try_acquire", return_value=True
+        ), patch.object(
+            instance_manager_main.THROTTLE, "release"
+        ), patch(
+            "services_instance_manager.main.threading.Thread", return_value=fake_thread
+        ) as thread_cls:
+            container = handler._resolve_target_container(wait_for_ready=False)
+
+        self.assertEqual(container, "openclaw-fyue-yinxiang.com")
+        thread_cls.assert_called_once()
+        fake_thread.start.assert_called_once_with()
+        warm_pairing.assert_not_called()
 
     def test_is_retryable_upstream_error(self):
         self.assertTrue(is_retryable_upstream_error(ConnectionRefusedError(111, "Connection refused")))
