@@ -68,13 +68,12 @@ class JITProvisionTests(unittest.TestCase):
         self.assertTrue(handler._should_use_bootstrap_wait_page("/resolve"))
         self.assertFalse(handler._should_use_bootstrap_wait_page("/__openclaw__/bootstrap-status"))
 
-    def test_nonblocking_resolve_backgrounds_local_pairing_warmup(self):
+    def test_nonblocking_resolve_does_not_spawn_pairing_warmup_thread(self):
         handler = Handler.__new__(Handler)
         handler.command = "GET"
         handler.headers = {"X-Forwarded-Email": "fyue@yinxiang.com", "Accept": "text/html"}
         handler.client_address = ("127.0.0.1", 12345)
 
-        fake_thread = unittest.mock.Mock()
         with patch.dict(os.environ, {"OPENCLAW_JIT_PROVISION": "false"}, clear=False), patch(
             "services_instance_manager.main.is_identity_allowed", return_value=True
         ), patch(
@@ -93,13 +92,12 @@ class JITProvisionTests(unittest.TestCase):
         ), patch.object(
             instance_manager_main.THROTTLE, "release"
         ), patch(
-            "services_instance_manager.main.threading.Thread", return_value=fake_thread
+            "services_instance_manager.main.threading.Thread"
         ) as thread_cls:
             container = handler._resolve_target_container(wait_for_ready=False)
 
         self.assertEqual(container, "openclaw-fyue-yinxiang.com")
-        thread_cls.assert_called_once()
-        fake_thread.start.assert_called_once_with()
+        thread_cls.assert_not_called()
         warm_pairing.assert_not_called()
 
     def test_is_retryable_upstream_error(self):

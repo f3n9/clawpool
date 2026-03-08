@@ -610,9 +610,9 @@ def _warm_local_pairing(docker, container):
     cmd = [
         "sh",
         "-lc",
-        "for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 80 81 82 83 84 85 86 87 88 89 90; do openclaw status >/dev/null 2>&1 || true; if openclaw devices approve --latest >/dev/null 2>&1; then exit 0; fi; sleep 1; done; exit 0",
+        "openclaw devices approve --latest >/dev/null 2>&1 || true",
     ]
-    timeout_seconds = int(os.getenv("OPENCLAW_LOCAL_PAIRING_WARMUP_TIMEOUT_SECONDS", "120"))
+    timeout_seconds = int(os.getenv("OPENCLAW_LOCAL_PAIRING_WARMUP_TIMEOUT_SECONDS", "10"))
     try:
         exec_run(container, cmd, user="node", timeout_seconds=timeout_seconds)
     except Exception as exc:
@@ -636,6 +636,57 @@ def _warm_local_pairing_async(docker, container):
         args=(docker, container),
         daemon=True,
         name=f"pairing-warmup-{container}",
+    )
+    thread.start()
+    return thread
+
+
+def _wait_for_local_pairing_identity(runtime_dir, uid, gid, timeout_seconds=None):
+    identity_path = os.path.join(runtime_dir, "identity", "device.json")
+    paired_path = os.path.join(runtime_dir, "devices", "paired.json")
+    if timeout_seconds is None:
+        timeout_seconds = int(
+            os.getenv(
+                "OPENCLAW_LOCAL_PAIRING_REPAIR_TIMEOUT_SECONDS",
+                os.getenv("OPENCLAW_HEALTH_TIMEOUT_SECONDS", "120"),
+            )
+        )
+    poll_seconds = float(os.getenv("OPENCLAW_LOCAL_PAIRING_REPAIR_POLL_SECONDS", "0.5"))
+    sleep_seconds = max(0.1, poll_seconds)
+    deadline = time.time() + max(1, timeout_seconds)
+    while time.time() < deadline:
+        if not os.path.exists(identity_path):
+            time.sleep(sleep_seconds)
+            continue
+
+        identity = _read_json_object(identity_path)
+        device_id_raw = identity.get("deviceId")
+        device_id = device_id_raw.strip() if isinstance(device_id_raw, str) else ""
+        if device_id:
+            paired = _read_json_object(paired_path)
+            if isinstance(paired.get(device_id), dict):
+                return
+
+        try:
+            _repair_local_device_pairing(runtime_dir, uid, gid)
+        except OSError:
+            pass
+
+        if device_id:
+            paired = _read_json_object(paired_path)
+            if isinstance(paired.get(device_id), dict):
+                return
+
+        time.sleep(sleep_seconds)
+
+
+
+def _schedule_local_pairing_repair(runtime_dir, uid, gid, timeout_seconds=None):
+    thread = threading.Thread(
+        target=_wait_for_local_pairing_identity,
+        args=(runtime_dir, uid, gid, timeout_seconds),
+        daemon=True,
+        name=f"pairing-repair-{os.path.basename(runtime_dir)}",
     )
     thread.start()
     return thread
@@ -1560,8 +1611,29 @@ def read_container_runtime_state(docker, container):
     return {"running": running, "health": health}
 
 
-def start_container_if_needed(docker, container, health_timeout_seconds=15, wait_for_ready=True):
+def start_container_if_needed(
+    docker,
+    container,
+    health_timeout_seconds=15,
+    wait_for_ready=True,
+    runtime_dir=None,
+    container_uid=None,
+    container_gid=None,
+):
     running_ready_seconds = int(os.getenv("OPENCLAW_RUNNING_READY_SECONDS", "20"))
+
+    def schedule_pairing_repair():
+        if runtime_dir and container_uid is not None and container_gid is not None:
+            pairing_timeout_seconds = max(1, int(health_timeout_seconds))
+            _schedule_local_pairing_repair(
+                runtime_dir,
+                container_uid,
+                container_gid,
+                timeout_seconds=pairing_timeout_seconds,
+            )
+            return True
+        return False
+
     state = docker.inspect(container)
     running = state.get("running")
     healthy = state.get("healthy")
@@ -1582,7 +1654,8 @@ def start_container_if_needed(docker, container, health_timeout_seconds=15, wait
 
     docker.start(container)
     if not wait_for_ready:
-        _warm_local_pairing_async(docker, container)
+        if not schedule_pairing_repair():
+            _warm_local_pairing_async(docker, container)
         return "started"
 
     deadline = time.time() + health_timeout_seconds
@@ -1601,11 +1674,13 @@ def start_container_if_needed(docker, container, health_timeout_seconds=15, wait
                 post_health_status = post_health.get("Status")
                 post_healthy = post_health_status == "healthy"
         if post_healthy:
-            _warm_local_pairing(docker, container)
+            if not schedule_pairing_repair():
+                _warm_local_pairing(docker, container)
             return "started"
         elapsed = health_timeout_seconds - (deadline - time.time())
         if post_running and post_health_status in {"starting", None} and elapsed >= running_ready_seconds:
-            _warm_local_pairing(docker, container)
+            if not schedule_pairing_repair():
+                _warm_local_pairing(docker, container)
             return "started"
         time.sleep(0.25)
 
@@ -2068,11 +2143,18 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             timeout = int(os.getenv("OPENCLAW_HEALTH_TIMEOUT_SECONDS", "120"))
+            users_root = os.getenv("OPENCLAW_USERS_ROOT", "/srv/openclaw/users")
+            runtime_dir = os.path.join(users_root, identity, "runtime")
+            container_uid = int(os.getenv("OPENCLAW_CONTAINER_UID", "1000"))
+            container_gid = int(os.getenv("OPENCLAW_CONTAINER_GID", "1000"))
             startup_state = start_container_if_needed(
                 DOCKER,
                 container,
                 health_timeout_seconds=timeout,
                 wait_for_ready=wait_for_ready,
+                runtime_dir=runtime_dir,
+                container_uid=container_uid,
+                container_gid=container_gid,
             )
         finally:
             THROTTLE.release()
@@ -2098,15 +2180,6 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         lifecycle = classify_instance_lifecycle(provision_state, startup_state)
-        if provision_state == "created" or startup_state == "started":
-            if wait_for_ready:
-                _warm_local_pairing(DOCKER, container)
-            else:
-                _warm_local_pairing_async(DOCKER, container)
-        users_root = os.getenv("OPENCLAW_USERS_ROOT", "/srv/openclaw/users")
-        runtime_dir = os.path.join(users_root, identity, "runtime")
-        container_uid = int(os.getenv("OPENCLAW_CONTAINER_UID", "1000"))
-        container_gid = int(os.getenv("OPENCLAW_CONTAINER_GID", "1000"))
         try:
             _repair_local_device_pairing(runtime_dir, container_uid, container_gid)
         except OSError:
