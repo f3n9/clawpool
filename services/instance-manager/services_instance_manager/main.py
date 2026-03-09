@@ -1615,9 +1615,66 @@ for (const pluginEntry of extraPluginsById.values()) {
 fs.mkdirSync(path.dirname('RUNTIME_CFG'), { recursive: true });
 fs.writeFileSync('RUNTIME_CFG', JSON.stringify(cfg, null, 2) + '\\n');
 """.replace("RUNTIME_CFG", runtime_cfg)
+    cleanup_stale_browser_locks = r"""
+const fs = require('fs');
+const path = require('path');
+const browserRoot = '/home/node/.openclaw/browser';
+const staleLockNames = ['SingletonLock', 'SingletonCookie', 'SingletonSocket', 'DevToolsActivePort'];
+const safeUnlink = (target) => {
+  try {
+    fs.rmSync(target, { force: true });
+  } catch (error) {
+  }
+};
+const pidIsAlive = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error && error.code === 'EPERM' ? true : false;
+  }
+};
+try {
+  if (fs.existsSync(browserRoot) && fs.statSync(browserRoot).isDirectory()) {
+    for (const profileEntry of fs.readdirSync(browserRoot, { withFileTypes: true })) {
+      if (!profileEntry.isDirectory()) {
+        continue;
+      }
+      const userDataDir = path.join(browserRoot, profileEntry.name, 'user-data');
+      if (!fs.existsSync(userDataDir) || !fs.statSync(userDataDir).isDirectory()) {
+        continue;
+      }
+      const lockPath = path.join(userDataDir, 'SingletonLock');
+      let lockStat;
+      try {
+        lockStat = fs.lstatSync(lockPath);
+      } catch (error) {
+        continue;
+      }
+      let lockValue = '';
+      try {
+        lockValue = lockStat.isSymbolicLink() ? fs.readlinkSync(lockPath) : fs.readFileSync(lockPath, 'utf8');
+      } catch (error) {
+        lockValue = '';
+      }
+      const pidMatch = /-(\d+)\s*$/.exec(String(lockValue).trim());
+      const stale = !pidMatch || !pidIsAlive(Number.parseInt(pidMatch[1], 10));
+      if (!stale) {
+        continue;
+      }
+      for (const name of staleLockNames) {
+        safeUnlink(path.join(userDataDir, name));
+      }
+    }
+  }
+} catch (error) {
+}
+"""
+
     script = (
         f'node -e {shlex.quote(install_compatibility_shims)} || true; '
         f'node -e {shlex.quote(reconcile_channel_plugins)} || true; '
+        f'node -e {shlex.quote(cleanup_stale_browser_locks)} || true; '
     )
     if force_responses_store:
         script += (

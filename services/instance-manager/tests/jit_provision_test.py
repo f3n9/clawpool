@@ -1137,6 +1137,19 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("waitForAbortSignal", script)
         self.assertIn("parseStrictPositiveInteger", script)
 
+    def test_default_startup_cmd_cleans_stale_browser_profile_locks(self):
+        cmd = _build_default_startup_cmd("node openclaw.mjs gateway --allow-unconfigured", True)
+        self.assertEqual(cmd[:2], ["sh", "-lc"])
+        script = cmd[2]
+        self.assertIn("SingletonLock", script)
+        self.assertIn("SingletonCookie", script)
+        self.assertIn("SingletonSocket", script)
+        self.assertIn("DevToolsActivePort", script)
+        self.assertIn("process.kill(pid, 0)", script)
+        self.assertIn("/home/node/.openclaw/browser", script)
+        self.assertIn("fs.lstatSync(lockPath)", script)
+        self.assertNotIn("fs.existsSync(lockPath)", script)
+
     def test_default_startup_cmd_reconciles_built_in_channels_and_extra_plugins(self):
         cmd = _build_default_startup_cmd("node openclaw.mjs gateway --allow-unconfigured", True)
         self.assertEqual(cmd[:2], ["sh", "-lc"])
