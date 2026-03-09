@@ -1327,7 +1327,7 @@ def _should_force_openai_responses_store():
     return api == "openai-responses"
 
 
-def _build_default_startup_cmd(start_cmd=None, force_responses_store=None):
+def _build_default_startup_cmd(start_cmd, force_responses_store):
     target = "/app/node_modules/@mariozechner/pi-ai/dist/providers/openai-responses.js"
     shared = "/app/node_modules/@mariozechner/pi-ai/dist/providers/openai-responses-shared.js"
     runtime_cfg = "/home/node/.openclaw/openclaw.json"
@@ -1379,14 +1379,12 @@ writeCompatFile('abort-signal.js', `export async function waitForAbortSignal(sig
     reconcile_channel_plugins = """
 const fs = require('fs');
 const path = require('path');
-const { createRequire } = require('module');
-const builtInChannelRoot = '/app/extensions';
-const defaultRoots = [];
+const builtInManifestPath = '/app/extensions/.openclaw-builtins.json';
 const configuredRoots = (process.env.OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS || '')
   .split(',')
   .map((value) => value.trim())
   .filter(Boolean);
-const pluginRoots = configuredRoots.length ? configuredRoots : defaultRoots;
+const pluginRoots = configuredRoots;
 const validPluginId = (value) => /^[a-z0-9._-]+$/.test(value);
 const explicitPluginIds = (process.env.OPENCLAW_DEFAULT_CHANNEL_PLUGINS || '')
   .split(',')
@@ -1406,100 +1404,13 @@ for (const root of pluginRoots) {
   } catch (error) {
   }
 }
-const canResolveDependency = (pluginDir, dependency) => {
-  if (!dependency || typeof dependency !== 'string') {
-    return false;
-  }
-  try {
-    const pluginRequire = createRequire(path.join(pluginDir, 'package.json'));
-    pluginRequire.resolve(dependency);
-    return true;
-  } catch (error) {
-    try {
-      require.resolve(dependency, { paths: [pluginDir, '/app'] });
-      return true;
-    } catch (innerError) {
-      return false;
-    }
-  }
-};
-const readPluginPackageJson = (pluginDir) => {
-  const packageJsonPath = path.join(pluginDir, 'package.json');
-  if (!fs.existsSync(packageJsonPath)) {
-    return null;
-  }
-  try {
-    return JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-  } catch (error) {
-    return null;
-  }
-};
-const resolveDeclaredChannelId = (packageJson) => {
-  const openclaw = packageJson && typeof packageJson === 'object' ? packageJson.openclaw : null;
-  const channel = openclaw && typeof openclaw === 'object' ? openclaw.channel : null;
-  return channel && validPluginId(channel.id) ? channel.id : null;
-};
-const resolvePluginEntrypoint = (pluginDir, packageJson) => {
-  const openclaw = packageJson && typeof packageJson === 'object' ? packageJson.openclaw : null;
-  const extensions = openclaw && Array.isArray(openclaw.extensions) ? openclaw.extensions : [];
-  const configuredEntrypoint = extensions.find((candidate) => typeof candidate === 'string' && candidate.trim());
-  const candidates = [
-    configuredEntrypoint ? path.resolve(pluginDir, configuredEntrypoint) : null,
-    path.join(pluginDir, 'index.ts'),
-    path.join(pluginDir, 'index.js'),
-    path.join(pluginDir, 'src', 'index.ts'),
-    path.join(pluginDir, 'src', 'index.js'),
-    path.join(pluginDir, 'src', 'channel.ts'),
-    path.join(pluginDir, 'src', 'channel.js'),
-    path.join(pluginDir, 'channel.ts'),
-    path.join(pluginDir, 'channel.js'),
-  ];
-  return candidates.find((candidate) => typeof candidate === 'string' && fs.existsSync(candidate)) || null;
-};
-const isBuiltInChannelPlugin = (pluginDir, packageJson) => {
-  if (resolveDeclaredChannelId(packageJson)) {
-    return true;
-  }
-  const description = (packageJson && typeof packageJson.description === 'string')
-    ? packageJson.description.toLowerCase()
-    : '';
-  const entrypoint = resolvePluginEntrypoint(pluginDir, packageJson);
-  if (!entrypoint) {
-    return description.includes('channel plugin');
-  }
-  try {
-    const source = fs.readFileSync(entrypoint, 'utf8');
-    return source.includes('registerChannel(') || description.includes('channel plugin');
-  } catch (error) {
-    return description.includes('channel plugin');
-  }
-};
 const allBuiltInChannelIds = [];
 const loadableBuiltInChannelIds = [];
 for (const channelEntry of (() => {
   try {
-    if (!fs.existsSync(builtInChannelRoot) || !fs.statSync(builtInChannelRoot).isDirectory()) {
-      return [];
-    }
-    return fs.readdirSync(builtInChannelRoot, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && validPluginId(entry.name))
-      .map((entry) => {
-        const channelDir = path.join(builtInChannelRoot, entry.name);
-        const packageJson = readPluginPackageJson(channelDir);
-        if (!isBuiltInChannelPlugin(channelDir, packageJson)) {
-          return null;
-        }
-        const dependencies = packageJson && typeof packageJson === 'object'
-          ? Object.keys(packageJson.dependencies || {})
-          : [];
-        const openclaw = packageJson && typeof packageJson === 'object' ? packageJson.openclaw : null;
-        const channel = openclaw && typeof openclaw === 'object' ? openclaw.channel : null;
-        return {
-          channelId: channel && validPluginId(channel.id) ? channel.id : entry.name,
-          loadable: dependencies.every((dependency) => canResolveDependency(channelDir, dependency)),
-        };
-      })
-      .filter(Boolean);
+    const manifest = JSON.parse(fs.readFileSync(builtInManifestPath, 'utf8'));
+    const channels = manifest && Array.isArray(manifest.channels) ? manifest.channels : [];
+    return channels.filter((entry) => entry && validPluginId(entry.channelId));
   } catch (error) {
     return [];
   }
@@ -1574,12 +1485,8 @@ for (const pluginId of extraPluginIds) {
   }
 }
 fs.mkdirSync(path.dirname('RUNTIME_CFG'), { recursive: true });
-fs.writeFileSync('RUNTIME_CFG', JSON.stringify(cfg, null, 2) + '\\n');
+fs.writeFileSync('RUNTIME_CFG', JSON.stringify(cfg, null, 2) + '\n');
 """.replace("RUNTIME_CFG", runtime_cfg)
-    if force_responses_store is None:
-        force_responses_store = _should_force_openai_responses_store()
-    if not start_cmd:
-        start_cmd = "node openclaw.mjs gateway --allow-unconfigured"
     script = (
         f'node -e {shlex.quote(install_compatibility_shims)} || true; '
         f'node -e {shlex.quote(reconcile_channel_plugins)} || true; '
@@ -1608,7 +1515,7 @@ fs.writeFileSync('RUNTIME_CFG', JSON.stringify(cfg, null, 2) + '\\n');
 
 
 
-def ensure_user_runtime(identity, users_root, gateway_token=""):
+def ensure_user_runtime(identity, users_root, gateway_token):
     base = os.path.join(users_root, identity)
     data_dir = os.path.join(base, "data")
     config_dir = os.path.join(base, "config")
@@ -1633,11 +1540,9 @@ def ensure_user_runtime(identity, users_root, gateway_token=""):
 
 
 def ensure_user_artifacts(
-    identity, users_root, default_key, default_endpoint, default_model, gateway_token="", runtime=None
+    identity, users_root, default_key, default_endpoint, default_model, gateway_token, runtime
 ):
-    resolved_gateway_token = (gateway_token or _ensure_user_gateway_token(identity, users_root)).strip()
-    if runtime is None:
-        runtime = ensure_user_runtime(identity, users_root, gateway_token=resolved_gateway_token)
+    resolved_gateway_token = gateway_token.strip()
     base = os.path.join(users_root, identity)
     secrets_dir = os.path.join(base, "secrets")
     container_uid = int(os.getenv("OPENCLAW_CONTAINER_UID", "1000"))

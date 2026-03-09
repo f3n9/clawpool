@@ -979,13 +979,24 @@ class JITProvisionTests(unittest.TestCase):
             self.assertIn("good-plugin", entries)
             self.assertNotIn("Bad Plugin", entries)
 
+    def test_dockerfile_generates_built_in_channel_manifest(self):
+        dockerfile = Path("/home/fyue/git/clawpool/infra/docker-build/Dockerfile").read_text(encoding="utf-8")
+        self.assertIn('/app/extensions/.openclaw-builtins.json', dockerfile)
+        self.assertIn('createRequire', dockerfile)
+        self.assertIn('channelId', dockerfile)
+        self.assertIn('loadable', dockerfile)
+
     def test_dockerfile_uses_base_entrypoint_directly(self):
         dockerfile = Path("/home/fyue/git/clawpool/infra/docker-build/Dockerfile").read_text(encoding="utf-8")
         self.assertNotIn("docker-entrypoint-with-extensions.sh", dockerfile)
         self.assertIn('ENTRYPOINT ["docker-entrypoint.sh"]', dockerfile)
 
+    def test_default_startup_cmd_requires_explicit_args(self):
+        with self.assertRaises(TypeError):
+            _build_default_startup_cmd()
+
     def test_default_startup_cmd_installs_runtime_compatibility_shims(self):
-        cmd = _build_default_startup_cmd()
+        cmd = _build_default_startup_cmd("node openclaw.mjs gateway --allow-unconfigured", True)
         self.assertEqual(cmd[:2], ["sh", "-lc"])
         script = cmd[2]
         self.assertIn("parse-finite-number.js", script)
@@ -994,13 +1005,11 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("parseStrictPositiveInteger", script)
 
     def test_default_startup_cmd_reconciles_built_in_channels_and_extra_plugins(self):
-        cmd = _build_default_startup_cmd()
+        cmd = _build_default_startup_cmd("node openclaw.mjs gateway --allow-unconfigured", True)
         self.assertEqual(cmd[:2], ["sh", "-lc"])
         script = cmd[2]
         self.assertNotIn("/opt/openclaw/extensions", script)
-        self.assertIn("/app/extensions", script)
-        self.assertIn("channel.ts", script)
-        self.assertIn("channel && validPluginId(channel.id) ? channel.id : entry.name", script)
+        self.assertIn("/app/extensions/.openclaw-builtins.json", script)
         self.assertIn("OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS", script)
         self.assertIn("openclaw.json", script)
         self.assertIn("plugins.entries", script)
@@ -1008,12 +1017,12 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("delete cfg.plugins.entries[channelId]", script)
         self.assertIn("plugins.allow", script)
         self.assertNotIn("plugins.load.paths", script)
-        self.assertIn("createRequire", script)
-        self.assertIn("package.json", script)
-        self.assertIn("dependencies", script)
-        self.assertIn("index.ts", script)
-        self.assertIn("registerChannel(", script)
-        self.assertIn("channel plugin", script)
+        self.assertNotIn("createRequire", script)
+        self.assertNotIn("package.json", script)
+        self.assertNotIn("dependencies", script)
+        self.assertNotIn("index.ts", script)
+        self.assertNotIn("registerChannel(", script)
+        self.assertNotIn("channel plugin", script)
         self.assertIn("loadableBuiltInChannelIds", script)
         self.assertIn("delete cfg.channels[channelId]", script)
         self.assertIn("cfg.plugins.allow = cfg.plugins.allow.filter", script)
@@ -1021,7 +1030,6 @@ class JITProvisionTests(unittest.TestCase):
         self.assertNotIn("fs.existsSync(pluginPath.trim())", script)
         self.assertIn("!allBuiltInChannelIds.includes(pluginId)", script)
         self.assertIn("enabled = true", script)
-        self.assertIn("\\n", script)
 
     def test_custom_startup_cmd_still_runs_plugin_reconciliation(self):
         docker = FakeDocker()

@@ -130,6 +130,84 @@ RUN set -eux; \
   fi; \
   chown -R node:node /app/extensions/wecom-openclaw-plugin; \
   rm -rf "$tmp_home" "$tmp_pack"
+RUN node <<'EOF'
+const fs = require('fs');
+const path = require('path');
+const { createRequire } = require('module');
+const builtInChannelRoot = '/app/extensions';
+const manifestPath = path.join(builtInChannelRoot, '.openclaw-builtins.json');
+const validPluginId = (value) => /^[a-z0-9._-]+$/.test(value);
+const readPluginPackageJson = (pluginDir) => {
+  const packageJsonPath = path.join(pluginDir, 'package.json');
+  if (!fs.existsSync(packageJsonPath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  } catch {
+    return null;
+  }
+};
+const resolveDeclaredChannelId = (packageJson) => {
+  const openclaw = packageJson && typeof packageJson === 'object' ? packageJson.openclaw : null;
+  const channel = openclaw && typeof openclaw === 'object' ? openclaw.channel : null;
+  return channel && validPluginId(channel.id) ? channel.id : null;
+};
+const resolvePluginEntrypoint = (pluginDir, packageJson) => {
+  const openclaw = packageJson && typeof packageJson === 'object' ? packageJson.openclaw : null;
+  const extensions = openclaw && Array.isArray(openclaw.extensions) ? openclaw.extensions : [];
+  const configuredEntrypoint = extensions.find((candidate) => typeof candidate === 'string' && candidate.trim());
+  const candidates = [
+    configuredEntrypoint ? path.resolve(pluginDir, configuredEntrypoint) : null,
+    path.join(pluginDir, 'index.ts'),
+    path.join(pluginDir, 'index.js'),
+    path.join(pluginDir, 'src', 'index.ts'),
+    path.join(pluginDir, 'src', 'index.js'),
+    path.join(pluginDir, 'src', 'channel.ts'),
+    path.join(pluginDir, 'src', 'channel.js'),
+    path.join(pluginDir, 'channel.ts'),
+    path.join(pluginDir, 'channel.js'),
+  ];
+  return candidates.find((candidate) => typeof candidate === 'string' && fs.existsSync(candidate)) || null;
+};
+const isBuiltInChannelPlugin = (pluginDir, packageJson) => {
+  if (resolveDeclaredChannelId(packageJson)) return true;
+  const description = (packageJson && typeof packageJson.description === 'string') ? packageJson.description.toLowerCase() : '';
+  const entrypoint = resolvePluginEntrypoint(pluginDir, packageJson);
+  if (!entrypoint) return description.includes('channel plugin');
+  try {
+    const source = fs.readFileSync(entrypoint, 'utf8');
+    return source.includes('registerChannel(') || description.includes('channel plugin');
+  } catch {
+    return description.includes('channel plugin');
+  }
+};
+const canResolveDependency = (pluginDir, dependency) => {
+  if (!dependency || typeof dependency !== 'string') return false;
+  try {
+    const pluginRequire = createRequire(path.join(pluginDir, 'package.json'));
+    pluginRequire.resolve(dependency);
+    return true;
+  } catch {
+    try {
+      require.resolve(dependency, { paths: [pluginDir, '/app'] });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+};
+const channels = [];
+for (const entry of fs.readdirSync(builtInChannelRoot, { withFileTypes: true })) {
+  if (!entry.isDirectory() || !validPluginId(entry.name)) continue;
+  const channelDir = path.join(builtInChannelRoot, entry.name);
+  const packageJson = readPluginPackageJson(channelDir);
+  if (!isBuiltInChannelPlugin(channelDir, packageJson)) continue;
+  const dependencies = packageJson && typeof packageJson === 'object' ? Object.keys(packageJson.dependencies || {}) : [];
+  const channelId = resolveDeclaredChannelId(packageJson) || entry.name;
+  channels.push({ channelId, loadable: dependencies.every((dependency) => canResolveDependency(channelDir, dependency)) });
+}
+fs.writeFileSync(manifestPath, JSON.stringify({ channels }, null, 2) + '\n');
+EOF
+RUN chown node:node /app/extensions/.openclaw-builtins.json
 
 USER node
 ENTRYPOINT ["docker-entrypoint.sh"]
