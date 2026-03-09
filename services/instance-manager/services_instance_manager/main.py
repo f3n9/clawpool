@@ -767,6 +767,7 @@ def _merge_unique_str_values(values):
 
 
 DEFAULT_RUNTIME_WORKSPACE_ROOT = "~/.openclaw/workspace"
+DEFAULT_SYSTEM_SKILLS_DIR = "/app/skills"
 DEFAULT_RUNTIME_SKILLS_DIR = f"{DEFAULT_RUNTIME_WORKSPACE_ROOT}/skills"
 DEFAULT_RUNTIME_PLUGINS_DIR = f"{DEFAULT_RUNTIME_WORKSPACE_ROOT}/plugins"
 DEFAULT_RUNTIME_HOOKS_DIR = f"{DEFAULT_RUNTIME_WORKSPACE_ROOT}/hooks"
@@ -1123,8 +1124,11 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
         skills_load = {}
         skills_cfg["load"] = skills_load
     extra_skill_dirs = skills_load.get("extraDirs")
-    if not isinstance(extra_skill_dirs, list) or not _merge_unique_str_values(extra_skill_dirs):
-        skills_load["extraDirs"] = [DEFAULT_RUNTIME_SKILLS_DIR]
+    merged_skill_dirs = _merge_unique_str_values(
+        [DEFAULT_SYSTEM_SKILLS_DIR, DEFAULT_RUNTIME_SKILLS_DIR, *(extra_skill_dirs or [])]
+    )
+    if merged_skill_dirs:
+        skills_load["extraDirs"] = merged_skill_dirs
 
     plugins_cfg = cfg.get("plugins")
     if not isinstance(plugins_cfg, dict):
@@ -1751,6 +1755,21 @@ def _build_container_spec(identity, artifacts):
     if gateway_token:
         env.append(f"OPENCLAW_GATEWAY_TOKEN={gateway_token}")
         env.append(f"OPENCLAW_GATEWAY_AUTH_TOKEN={gateway_token}")
+
+    for passthrough_name in (
+        "OPENCLAW_DASHSCOPE_API_KEY",
+        "OPENCLAW_DASHSCOPE_ASR_API_KEY",
+        "OPENCLAW_DASHSCOPE_TTS_API_KEY",
+        "OPENCLAW_DASHSCOPE_ASR_BASE_URL",
+        "OPENCLAW_DASHSCOPE_TTS_BASE_URL",
+        "OPENCLAW_DASHSCOPE_ASR_MODEL",
+        "OPENCLAW_DASHSCOPE_TTS_MODEL",
+        "OPENCLAW_DASHSCOPE_TTS_VOICE",
+        "OPENCLAW_AUDIO_OUTPUT_DIR",
+    ):
+        passthrough_value = os.getenv(passthrough_name, "").strip()
+        if passthrough_value:
+            env.append(f"{passthrough_name}={passthrough_value}")
     spec = {
         "Image": full_image,
         "Env": env,

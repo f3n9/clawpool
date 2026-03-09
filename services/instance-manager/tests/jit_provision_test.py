@@ -332,7 +332,7 @@ class JITProvisionTests(unittest.TestCase):
             )
             self.assertEqual(
                 cfg.get("skills", {}).get("load", {}).get("extraDirs"),
-                ["~/.openclaw/workspace/skills"],
+                ["/app/skills", "~/.openclaw/workspace/skills"],
             )
             self.assertEqual(
                 cfg.get("plugins", {}).get("load", {}).get("paths"),
@@ -406,7 +406,10 @@ class JITProvisionTests(unittest.TestCase):
             with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
                 cfg = json.load(f)
             self.assertEqual(cfg.get("agents", {}).get("defaults", {}).get("workspace"), "/custom/ws")
-            self.assertEqual(cfg.get("skills", {}).get("load", {}).get("extraDirs"), ["/custom/skills"])
+            self.assertEqual(
+                cfg.get("skills", {}).get("load", {}).get("extraDirs"),
+                ["/app/skills", "~/.openclaw/workspace/skills", "/custom/skills"],
+            )
             self.assertEqual(cfg.get("plugins", {}).get("load", {}).get("paths"), ["/custom/plugins"])
             self.assertEqual(
                 cfg.get("hooks", {}).get("internal", {}).get("load", {}).get("extraDirs"),
@@ -503,6 +506,38 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("OPENAI_BASE_URL=https://api.example/v1", spec.get("Env", []))
         self.assertIn("OPENAI_MODEL=gpt-5.2", spec.get("Env", []))
         self.assertIn("OPENCLAW_GATEWAY_TOKEN=t1", spec.get("Env", []))
+
+    def test_build_container_spec_passes_through_speech_skill_env(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+                "OPENCLAW_DASHSCOPE_API_KEY": "dashscope-shared",
+                "OPENCLAW_DASHSCOPE_ASR_BASE_URL": "https://dashscope.example/asr",
+                "OPENCLAW_DASHSCOPE_TTS_BASE_URL": "https://dashscope.example/tts",
+            },
+            clear=False,
+        ), patch(
+            "services_instance_manager.main._build_default_startup_cmd",
+            return_value=["sh", "-lc", "echo ok"],
+        ):
+            spec = instance_manager_main._build_container_spec(
+                identity="u1001",
+                artifacts={
+                    "data_dir": "/tmp/data",
+                    "config_dir": "/tmp/config",
+                    "runtime_dir": "/tmp/runtime",
+                    "gateway_token": "t1",
+                    "api_key": "k1",
+                    "endpoint": "https://api.example/v1",
+                    "model": "gpt-5.2",
+                },
+            )
+        env_entries = spec.get("Env", [])
+        self.assertIn("OPENCLAW_DASHSCOPE_API_KEY=dashscope-shared", env_entries)
+        self.assertIn("OPENCLAW_DASHSCOPE_ASR_BASE_URL=https://dashscope.example/asr", env_entries)
+        self.assertIn("OPENCLAW_DASHSCOPE_TTS_BASE_URL=https://dashscope.example/tts", env_entries)
 
     def test_repairs_legacy_trusted_proxy_config(self):
         docker = FakeDocker()
@@ -1049,6 +1084,27 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn('bundledExtraPlugins', dockerfile)
         self.assertIn('OPENCLAW_BUNDLED_EXTRA_PLUGIN_IDS', dockerfile)
         self.assertIn('wecom-openclaw-plugin', dockerfile)
+
+    def test_bundled_speech_skill_assets_exist(self):
+        root = Path("/home/fyue/git/clawpool/infra/docker-build/skills")
+        asr_skill = root / "asr-transcribe"
+        tts_skill = root / "tts-synthesize"
+        self.assertTrue((asr_skill / "SKILL.md").exists())
+        self.assertTrue((tts_skill / "SKILL.md").exists())
+        self.assertTrue((asr_skill / "transcribe.mjs").exists())
+        self.assertTrue((tts_skill / "synthesize.mjs").exists())
+        self.assertIn("qwen3-asr-flash", (asr_skill / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("qwen3-asr-flash", (asr_skill / "transcribe.mjs").read_text(encoding="utf-8"))
+        self.assertIn("OPENCLAW_DASHSCOPE_ASR_API_KEY", (asr_skill / "transcribe.mjs").read_text(encoding="utf-8"))
+        self.assertIn("qwen3-tts-flash", (tts_skill / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("qwen3-tts-flash", (tts_skill / "synthesize.mjs").read_text(encoding="utf-8"))
+        self.assertIn("OPENCLAW_DASHSCOPE_TTS_API_KEY", (tts_skill / "synthesize.mjs").read_text(encoding="utf-8"))
+
+    def test_dockerfile_bundles_speech_skills(self):
+        dockerfile = Path("/home/fyue/git/clawpool/infra/docker-build/Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("/app/skills", dockerfile)
+        self.assertIn("COPY skills /app/skills", dockerfile)
+        self.assertIn("chown -R node:node /app/skills", dockerfile)
 
     def test_dockerfile_uses_base_entrypoint_directly(self):
         dockerfile = Path("/home/fyue/git/clawpool/infra/docker-build/Dockerfile").read_text(encoding="utf-8")

@@ -223,5 +223,8 @@ fs.writeFileSync(manifestPath, JSON.stringify({ channels: builtInChannels, built
 EOF
 RUN chown node:node /app/extensions/.openclaw-builtins.json
 
+COPY skills /app/skills
+RUN chown -R node:node /app/skills
+
 USER node
 ENTRYPOINT ["docker-entrypoint.sh"]
