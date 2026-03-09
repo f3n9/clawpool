@@ -1633,10 +1633,11 @@ def ensure_user_runtime(identity, users_root, gateway_token=""):
 
 
 def ensure_user_artifacts(
-    identity, users_root, default_key, default_endpoint, default_model, gateway_token=""
+    identity, users_root, default_key, default_endpoint, default_model, gateway_token="", runtime=None
 ):
     resolved_gateway_token = (gateway_token or _ensure_user_gateway_token(identity, users_root)).strip()
-    runtime = ensure_user_runtime(identity, users_root, gateway_token=resolved_gateway_token)
+    if runtime is None:
+        runtime = ensure_user_runtime(identity, users_root, gateway_token=resolved_gateway_token)
     base = os.path.join(users_root, identity)
     secrets_dir = os.path.join(base, "secrets")
     container_uid = int(os.getenv("OPENCLAW_CONTAINER_UID", "1000"))
@@ -1647,38 +1648,47 @@ def ensure_user_artifacts(
     if not default_key:
         raise RuntimeError("OPENCLAW_DEFAULT_OPENAI_KEY is required for JIT provisioning")
 
+    api_key_file = os.path.join(secrets_dir, "openai_api_key")
+    endpoint_file = os.path.join(secrets_dir, "openai_endpoint")
+    model_file = os.path.join(secrets_dir, "openai_model")
     _write_if_missing(
-        os.path.join(secrets_dir, "openai_api_key"),
+        api_key_file,
         default_key,
         0o600,
         container_uid,
         container_gid,
     )
     _write_if_missing(
-        os.path.join(secrets_dir, "openai_endpoint"),
+        endpoint_file,
         default_endpoint,
         0o600,
         container_uid,
         container_gid,
     )
     _write_if_missing(
-        os.path.join(secrets_dir, "openai_model"),
+        model_file,
         default_model,
         0o600,
         container_uid,
         container_gid,
     )
+    api_key = _read_secret_file(api_key_file) or default_key
+    endpoint = _read_secret_file(endpoint_file) or default_endpoint
+    model = _read_secret_file(model_file) or default_model
     return {
         **runtime,
         "secrets_dir": secrets_dir,
-        "api_key_file": os.path.join(secrets_dir, "openai_api_key"),
-        "endpoint_file": os.path.join(secrets_dir, "openai_endpoint"),
-        "model_file": os.path.join(secrets_dir, "openai_model"),
+        "api_key_file": api_key_file,
+        "endpoint_file": endpoint_file,
+        "model_file": model_file,
+        "api_key": api_key,
+        "endpoint": endpoint,
+        "model": model,
         "gateway_token": resolved_gateway_token,
     }
 
 
-def _build_container_spec(container, identity, artifacts):
+def _build_container_spec(identity, artifacts):
     image = os.getenv("OPENCLAW_IMAGE", "").strip()
     if not image:
         raise RuntimeError("OPENCLAW_IMAGE is required for JIT provisioning")
@@ -1691,9 +1701,9 @@ def _build_container_spec(container, identity, artifacts):
     runtime_path = os.getenv("OPENCLAW_CONTAINER_RUNTIME_PATH", "/home/node/.openclaw")
     cmd_value = os.getenv("OPENCLAW_STARTUP_CMD", "").strip()
 
-    api_key = _read_secret_file(artifacts["api_key_file"])
-    endpoint = _read_secret_file(artifacts["endpoint_file"])
-    model = _read_secret_file(artifacts["model_file"])
+    api_key = artifacts.get("api_key") or _read_secret_file(artifacts["api_key_file"])
+    endpoint = artifacts.get("endpoint") or _read_secret_file(artifacts["endpoint_file"])
+    model = artifacts.get("model") or _read_secret_file(artifacts["model_file"])
 
     env = [
         f"OPENAI_API_KEY={api_key}",
@@ -1746,7 +1756,7 @@ def ensure_container_exists(docker, identity, container):
         identity=normalized_identity,
         users_root=users_root,
     )
-    ensure_user_runtime(
+    runtime = ensure_user_runtime(
         identity=normalized_identity,
         users_root=users_root,
         gateway_token=gateway_token,
@@ -1765,8 +1775,9 @@ def ensure_container_exists(docker, identity, container):
         default_endpoint=os.getenv("OPENCLAW_DEFAULT_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
         default_model=os.getenv("OPENCLAW_DEFAULT_OPENAI_MODEL", _default_primary_model_ref()),
         gateway_token=gateway_token,
+        runtime=runtime,
     )
-    spec = _build_container_spec(container=container, identity=identity, artifacts=artifacts)
+    spec = _build_container_spec(identity=identity, artifacts=artifacts)
     try:
         docker.create(container, spec)
     except DockerAPIError as exc:

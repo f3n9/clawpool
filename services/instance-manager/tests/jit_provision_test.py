@@ -350,6 +350,95 @@ class JITProvisionTests(unittest.TestCase):
             self.assertIn("msgId = undefined", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("if (false", cmd[2] if len(cmd) > 2 else "")
 
+    def test_create_path_initializes_runtime_once(self):
+        docker = FakeDocker()
+        calls = {"config": 0, "pairing": 0}
+
+        def count_config(*args, **kwargs):
+            calls["config"] += 1
+
+        def count_pairing(*args, **kwargs):
+            calls["pairing"] += 1
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
+                "OPENCLAW_DEFAULT_OPENAI_MODEL": "gpt-5.2",
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+            },
+            clear=False,
+        ), patch("services_instance_manager.main._ensure_runtime_config", side_effect=count_config), patch(
+            "services_instance_manager.main._repair_local_device_pairing", side_effect=count_pairing
+        ):
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "created")
+            self.assertEqual(calls["config"], 1)
+            self.assertEqual(calls["pairing"], 1)
+
+    def test_create_path_prefers_existing_secret_files_over_defaults(self):
+        docker = FakeDocker()
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-default",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://default.example/v1",
+                "OPENCLAW_DEFAULT_OPENAI_MODEL": "gpt-default",
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+            },
+            clear=False,
+        ):
+            secrets_dir = Path(tmpdir) / "u1001" / "secrets"
+            secrets_dir.mkdir(parents=True, exist_ok=True)
+            (secrets_dir / "openai_api_key").write_text("k-existing", encoding="utf-8")
+            (secrets_dir / "openai_endpoint").write_text("https://existing.example/v1", encoding="utf-8")
+            (secrets_dir / "openai_model").write_text("gpt-existing", encoding="utf-8")
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "created")
+            _, spec = docker.created[0]
+            env_entries = spec.get("Env", [])
+            self.assertIn("OPENAI_API_KEY=k-existing", env_entries)
+            self.assertIn("OPENAI_BASE_URL=https://existing.example/v1", env_entries)
+            self.assertIn("OPENAI_MODEL=gpt-existing", env_entries)
+            self.assertNotIn("OPENAI_API_KEY=k-default", env_entries)
+
+    def test_build_container_spec_uses_artifact_values_without_rereading_files(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+            },
+            clear=False,
+        ), patch(
+            "services_instance_manager.main._build_default_startup_cmd",
+            return_value=["sh", "-lc", "echo ok"],
+        ), patch(
+            "services_instance_manager.main._read_secret_file",
+            side_effect=AssertionError("should not reread secrets"),
+        ):
+            spec = instance_manager_main._build_container_spec(
+                identity="u1001",
+                artifacts={
+                    "data_dir": "/tmp/data",
+                    "config_dir": "/tmp/config",
+                    "runtime_dir": "/tmp/runtime",
+                    "gateway_token": "t1",
+                    "api_key": "k1",
+                    "endpoint": "https://api.example/v1",
+                    "model": "gpt-5.2",
+                },
+            )
+        self.assertIn("OPENAI_API_KEY=k1", spec.get("Env", []))
+        self.assertIn("OPENAI_BASE_URL=https://api.example/v1", spec.get("Env", []))
+        self.assertIn("OPENAI_MODEL=gpt-5.2", spec.get("Env", []))
+        self.assertIn("OPENCLAW_GATEWAY_TOKEN=t1", spec.get("Env", []))
+
     def test_repairs_legacy_trusted_proxy_config(self):
         docker = FakeDocker()
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
