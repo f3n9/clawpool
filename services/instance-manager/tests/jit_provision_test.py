@@ -284,13 +284,8 @@ class JITProvisionTests(unittest.TestCase):
                 cfg.get("gateway", {}).get("trustedProxies"),
                 ["127.0.0.1/32", "172.16.0.0/12"],
             )
-            self.assertNotIn(
-                "telegram",
-                cfg.get("plugins", {}).get("entries", {}),
-            )
-            self.assertTrue(
-                cfg.get("plugins", {}).get("entries", {}).get("wecom", {}).get("enabled"),
-            )
+            self.assertFalse(cfg.get("plugins", {}).get("entries"))
+            self.assertFalse(cfg.get("channels"))
             self.assertTrue(
                 cfg.get("tools", {}).get("media", {}).get("image", {}).get("enabled"),
             )
@@ -331,6 +326,36 @@ class JITProvisionTests(unittest.TestCase):
                 cfg.get("models", {}).get("providers", {}).get("openai", {}).get("models", [{}])[0].get("id"),
                 "gpt-5.2",
             )
+            self.assertEqual(
+                cfg.get("agents", {}).get("defaults", {}).get("workspace"),
+                "~/.openclaw/workspace",
+            )
+            self.assertEqual(
+                cfg.get("skills", {}).get("load", {}).get("extraDirs"),
+                ["~/.openclaw/workspace/skills"],
+            )
+            self.assertEqual(
+                cfg.get("plugins", {}).get("load", {}).get("paths"),
+                ["~/.openclaw/workspace/plugins"],
+            )
+            self.assertEqual(
+                cfg.get("hooks", {}).get("internal", {}).get("load", {}).get("extraDirs"),
+                ["~/.openclaw/workspace/hooks"],
+            )
+            self.assertEqual(
+                cfg.get("hooks", {}).get("transformsDir"),
+                "~/.openclaw/workspace/hooks/transforms",
+            )
+            self.assertEqual(
+                cfg.get("cron", {}).get("store"),
+                "~/.openclaw/workspace/data/cron/jobs.jsonl",
+            )
+            self.assertTrue(os.path.isdir(f"{tmpdir}/u1001/runtime/workspace"))
+            self.assertTrue(os.path.isdir(f"{tmpdir}/u1001/runtime/workspace/skills"))
+            self.assertTrue(os.path.isdir(f"{tmpdir}/u1001/runtime/workspace/plugins"))
+            self.assertTrue(os.path.isdir(f"{tmpdir}/u1001/runtime/workspace/hooks"))
+            self.assertTrue(os.path.isdir(f"{tmpdir}/u1001/runtime/workspace/hooks/transforms"))
+            self.assertTrue(os.path.isdir(f"{tmpdir}/u1001/runtime/workspace/data/cron"))
             _, spec = docker.created[0]
             binds = spec.get("HostConfig", {}).get("Binds", [])
             self.assertTrue(any(b.endswith(":/home/node/.openclaw") for b in binds))
@@ -349,6 +374,46 @@ class JITProvisionTests(unittest.TestCase):
             self.assertIn("textSignature", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("msgId = undefined", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("if (false", cmd[2] if len(cmd) > 2 else "")
+
+    def test_workspace_persistence_defaults_do_not_override_explicit_values(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1001")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1001/runtime", exist_ok=True)
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "agents": {"defaults": {"workspace": "/custom/ws"}},
+                        "skills": {"load": {"extraDirs": ["/custom/skills"]}},
+                        "plugins": {"load": {"paths": ["/custom/plugins"]}},
+                        "hooks": {
+                            "internal": {"load": {"extraDirs": ["/custom/hooks"]}},
+                            "transformsDir": "/custom/transforms",
+                        },
+                        "cron": {"store": "/custom/cron/jobs.jsonl"},
+                    },
+                    f,
+                )
+            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
+            self.assertEqual(status, "existing")
+            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            self.assertEqual(cfg.get("agents", {}).get("defaults", {}).get("workspace"), "/custom/ws")
+            self.assertEqual(cfg.get("skills", {}).get("load", {}).get("extraDirs"), ["/custom/skills"])
+            self.assertEqual(cfg.get("plugins", {}).get("load", {}).get("paths"), ["/custom/plugins"])
+            self.assertEqual(
+                cfg.get("hooks", {}).get("internal", {}).get("load", {}).get("extraDirs"),
+                ["/custom/hooks"],
+            )
+            self.assertEqual(cfg.get("hooks", {}).get("transformsDir"), "/custom/transforms")
+            self.assertEqual(cfg.get("cron", {}).get("store"), "/custom/cron/jobs.jsonl")
 
     def test_create_path_initializes_runtime_once(self):
         docker = FakeDocker()
@@ -850,111 +915,39 @@ class JITProvisionTests(unittest.TestCase):
             self.assertIn("/app/extensions", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("channels[channelId]", cmd[2] if len(cmd) > 2 else "")
 
-    def test_extra_channel_plugins_default_enabled_also_enable_channel_config(self):
+    def test_runtime_seed_does_not_persist_default_channel_plugins(self):
         docker = FakeDocker()
-        docker.existing.add("openclaw-u1001")
         with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
             os.environ,
             {
                 "OPENCLAW_USERS_ROOT": tmpdir,
-                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
-                "OPENCLAW_DEFAULT_CHANNEL_PLUGINS": "wecom",
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
+                "OPENCLAW_DEFAULT_OPENAI_MODEL": "gpt-5.2",
+                "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
+                "OPENCLAW_IMAGE_TAG": "1.0.0",
+                "OPENCLAW_DEFAULT_CHANNEL_PLUGINS": "telegram,wecom-openclaw-plugin",
             },
             clear=False,
         ):
-            os.makedirs(f"{tmpdir}/u1001/runtime", exist_ok=True)
             status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
-            self.assertEqual(status, "existing")
+            self.assertEqual(status, "created")
             with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
                 cfg = json.load(f)
-            self.assertTrue(cfg.get("plugins", {}).get("entries", {}).get("wecom", {}).get("enabled"))
-            self.assertTrue(cfg.get("channels", {}).get("wecom", {}).get("enabled"))
+            self.assertFalse(cfg.get("plugins", {}).get("entries"))
+            self.assertFalse(cfg.get("channels"))
 
-    def test_channel_plugins_default_enabled_without_overriding_explicit_false(self):
-        docker = FakeDocker()
-        docker.existing.add("openclaw-u1001")
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
-            os.environ,
-            {
-                "OPENCLAW_USERS_ROOT": tmpdir,
-                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
-                "OPENCLAW_DEFAULT_CHANNEL_PLUGINS": "telegram,wecom",
-            },
-            clear=False,
-        ):
-            os.makedirs(f"{tmpdir}/u1001/runtime", exist_ok=True)
-            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "plugins": {
-                            "entries": {
-                                "telegram": {"enabled": False},
-                            }
-                        }
-                    },
-                    f,
-                )
-            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
-            self.assertEqual(status, "existing")
-            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            self.assertFalse(cfg.get("plugins", {}).get("entries", {}).get("telegram", {}).get("enabled"))
-            self.assertTrue(cfg.get("plugins", {}).get("entries", {}).get("wecom", {}).get("enabled"))
+    def test_default_startup_cmd_keeps_newline_escape_for_runtime_json_write(self):
+        cmd = _build_default_startup_cmd("node openclaw.mjs gateway --allow-unconfigured", True)
+        script = cmd[2]
+        self.assertIn("\\n", script)
 
-    def test_discovered_channel_plugins_default_enabled_without_overriding_explicit_false(self):
-        docker = FakeDocker()
-        docker.existing.add("openclaw-u1001")
-        with tempfile.TemporaryDirectory() as tmpdir, tempfile.TemporaryDirectory() as plugdir, patch.dict(
-            os.environ,
-            {
-                "OPENCLAW_USERS_ROOT": tmpdir,
-                "OPENCLAW_DEFAULT_OPENAI_KEY": "",
-                "OPENCLAW_DEFAULT_CHANNEL_PLUGINS": "telegram",
-                "OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS": plugdir,
-            },
-            clear=False,
-        ):
-            os.makedirs(f"{tmpdir}/u1001/runtime", exist_ok=True)
-            os.makedirs(os.path.join(plugdir, "discord"), exist_ok=True)
-            os.makedirs(os.path.join(plugdir, "wecom"), exist_ok=True)
-            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "plugins": {
-                            "entries": {
-                                "telegram": {"enabled": False},
-                            }
-                        }
-                    },
-                    f,
-                )
-            status = ensure_container_exists(docker, identity="u1001", container="openclaw-u1001")
-            self.assertEqual(status, "existing")
-            with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            entries = cfg.get("plugins", {}).get("entries", {})
-            self.assertFalse(entries.get("telegram", {}).get("enabled"))
-            self.assertTrue(entries.get("discord", {}).get("enabled"))
-            self.assertTrue(entries.get("wecom", {}).get("enabled"))
-
-
-    def test_discovered_channel_plugin_ids_prefer_manifest_channel_id(self):
-        with tempfile.TemporaryDirectory() as plugdir:
-            plugin_dir = os.path.join(plugdir, "wecom-openclaw-plugin")
-            os.makedirs(plugin_dir, exist_ok=True)
-            with open(os.path.join(plugin_dir, "package.json"), "w", encoding="utf-8") as f:
-                json.dump({"openclaw": {"channel": {"id": "wecom"}}}, f)
-            discovered = instance_manager_main._discover_channel_plugin_ids([plugdir])
-            self.assertEqual(discovered, ["wecom"])
-
-    def test_discovered_channel_plugin_ids_fall_back_to_directory_name(self):
-        with tempfile.TemporaryDirectory() as plugdir:
-            plugin_dir = os.path.join(plugdir, "discord")
-            os.makedirs(plugin_dir, exist_ok=True)
-            with open(os.path.join(plugin_dir, "package.json"), "w", encoding="utf-8") as f:
-                json.dump({"name": "discord-plugin"}, f)
-            discovered = instance_manager_main._discover_channel_plugin_ids([plugdir])
-            self.assertEqual(discovered, ["discord"])
+    def test_default_startup_cmd_separates_extra_plugin_id_from_channel_id(self):
+        cmd = _build_default_startup_cmd("node openclaw.mjs gateway --allow-unconfigured", True)
+        script = cmd[2]
+        self.assertIn("pluginEntry.pluginId", script)
+        self.assertIn("pluginEntry.channelId", script)
+        self.assertIn("delete cfg.plugins.entries[legacyPluginId]", script)
 
     def test_invalid_discovered_plugin_names_are_ignored(self):
         docker = FakeDocker()
@@ -975,9 +968,7 @@ class JITProvisionTests(unittest.TestCase):
             self.assertEqual(status, "existing")
             with open(f"{tmpdir}/u1001/runtime/openclaw.json", "r", encoding="utf-8") as f:
                 cfg = json.load(f)
-            entries = cfg.get("plugins", {}).get("entries", {})
-            self.assertIn("good-plugin", entries)
-            self.assertNotIn("Bad Plugin", entries)
+            self.assertFalse(cfg.get("plugins", {}).get("entries"))
 
     def test_dockerfile_generates_built_in_channel_manifest(self):
         dockerfile = Path("/home/fyue/git/clawpool/infra/docker-build/Dockerfile").read_text(encoding="utf-8")
@@ -985,6 +976,9 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn('createRequire', dockerfile)
         self.assertIn('channelId', dockerfile)
         self.assertIn('loadable', dockerfile)
+        self.assertIn('bundledExtraPlugins', dockerfile)
+        self.assertIn('OPENCLAW_BUNDLED_EXTRA_PLUGIN_IDS', dockerfile)
+        self.assertIn('wecom-openclaw-plugin', dockerfile)
 
     def test_dockerfile_uses_base_entrypoint_directly(self):
         dockerfile = Path("/home/fyue/git/clawpool/infra/docker-build/Dockerfile").read_text(encoding="utf-8")

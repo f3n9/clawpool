@@ -6,12 +6,25 @@ This runbook ensures user-modified OpenClaw settings survive container restarts.
 - Channels configuration
 - Skills configuration
 - Plugins configuration and plugin state
+- Hooks / transforms configuration
+- Cron job persistence
 - Runtime metadata under `/home/node/.openclaw` (gateway token, local state, logs, jobs)
 
 ## Baseline Rule
 - Mount user-specific config and plugin paths from `/srv/openclaw/users/<employee_id>/config`.
 - Mount OpenClaw runtime path from `/srv/openclaw/users/<employee_id>/runtime` -> `/home/node/.openclaw`.
 - Never store user customization only inside container writable layer.
+
+## Workspace-Backed Defaults
+Newly provisioned users now get explicit persistent defaults under the mounted runtime tree:
+- `agents.defaults.workspace` -> `~/.openclaw/workspace`
+- `skills.load.extraDirs` -> `~/.openclaw/workspace/skills`
+- `plugins.load.paths` -> `~/.openclaw/workspace/plugins`
+- `hooks.internal.load.extraDirs` -> `~/.openclaw/workspace/hooks`
+- `hooks.transformsDir` -> `~/.openclaw/workspace/hooks/transforms`
+- `cron.store` -> `~/.openclaw/workspace/data/cron/jobs.jsonl`
+
+These paths all resolve inside the persisted `/home/node/.openclaw` mount, so user-created skills, plugins, hooks, transforms, and cron jobs survive container restarts.
 
 ## Validation
 1. User updates Channels/Skills/Plugins via WebGUI.

@@ -766,6 +766,29 @@ def _merge_unique_str_values(values):
     return out
 
 
+DEFAULT_RUNTIME_WORKSPACE_ROOT = "~/.openclaw/workspace"
+DEFAULT_RUNTIME_SKILLS_DIR = f"{DEFAULT_RUNTIME_WORKSPACE_ROOT}/skills"
+DEFAULT_RUNTIME_PLUGINS_DIR = f"{DEFAULT_RUNTIME_WORKSPACE_ROOT}/plugins"
+DEFAULT_RUNTIME_HOOKS_DIR = f"{DEFAULT_RUNTIME_WORKSPACE_ROOT}/hooks"
+DEFAULT_RUNTIME_HOOKS_TRANSFORMS_DIR = f"{DEFAULT_RUNTIME_HOOKS_DIR}/transforms"
+DEFAULT_RUNTIME_CRON_STORE = f"{DEFAULT_RUNTIME_WORKSPACE_ROOT}/data/cron/jobs.jsonl"
+
+
+def _ensure_runtime_workspace_dirs(runtime_dir, uid, gid):
+    for rel_path in (
+        "workspace",
+        os.path.join("workspace", "skills"),
+        os.path.join("workspace", "plugins"),
+        os.path.join("workspace", "hooks"),
+        os.path.join("workspace", "hooks", "transforms"),
+        os.path.join("workspace", "data"),
+        os.path.join("workspace", "data", "cron"),
+    ):
+        target = os.path.join(runtime_dir, rel_path)
+        _safe_mkdir(target, 0o700)
+        _safe_chown(target, uid, gid)
+
+
 
 def _public_key_raw_base64url_from_pem(public_key_pem):
     if not isinstance(public_key_pem, str):
@@ -1071,9 +1094,9 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
                 os.getenv("OPENCLAW_GATEWAY_TRUSTED_PROXIES", "127.0.0.1/32,172.16.0.0/12")
             )
 
-    # Ensure bundled/default channel plugins are enabled so the Channels page can
-    # resolve schemas, while preserving explicit user enable/disable choices.
-    _ensure_default_channel_plugins(cfg, _default_channel_plugin_ids())
+    # Default/bundled channel/plugin enablement is reconciled inside the user
+    # container at startup, where the image-bundled extension manifest is
+    # available. Avoid persisting guessed host-side defaults here.
 
     # Enable webchat image attachments by default for new/legacy users that do
     # not have an explicit preference yet.
@@ -1098,6 +1121,59 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
         media["image"] = image
     if not isinstance(image.get("enabled"), bool):
         image["enabled"] = True
+
+    _ensure_runtime_workspace_dirs(runtime_dir, uid, gid)
+
+    skills_cfg = cfg.get("skills")
+    if not isinstance(skills_cfg, dict):
+        skills_cfg = {}
+        cfg["skills"] = skills_cfg
+    skills_load = skills_cfg.get("load")
+    if not isinstance(skills_load, dict):
+        skills_load = {}
+        skills_cfg["load"] = skills_load
+    extra_skill_dirs = skills_load.get("extraDirs")
+    if not isinstance(extra_skill_dirs, list) or not _merge_unique_str_values(extra_skill_dirs):
+        skills_load["extraDirs"] = [DEFAULT_RUNTIME_SKILLS_DIR]
+
+    plugins_cfg = cfg.get("plugins")
+    if not isinstance(plugins_cfg, dict):
+        plugins_cfg = {}
+        cfg["plugins"] = plugins_cfg
+    plugins_load = plugins_cfg.get("load")
+    if not isinstance(plugins_load, dict):
+        plugins_load = {}
+        plugins_cfg["load"] = plugins_load
+    plugin_paths = plugins_load.get("paths")
+    if not isinstance(plugin_paths, list) or not _merge_unique_str_values(plugin_paths):
+        plugins_load["paths"] = [DEFAULT_RUNTIME_PLUGINS_DIR]
+
+    hooks_cfg = cfg.get("hooks")
+    if not isinstance(hooks_cfg, dict):
+        hooks_cfg = {}
+        cfg["hooks"] = hooks_cfg
+    hooks_internal = hooks_cfg.get("internal")
+    if not isinstance(hooks_internal, dict):
+        hooks_internal = {}
+        hooks_cfg["internal"] = hooks_internal
+    hooks_internal_load = hooks_internal.get("load")
+    if not isinstance(hooks_internal_load, dict):
+        hooks_internal_load = {}
+        hooks_internal["load"] = hooks_internal_load
+    hook_extra_dirs = hooks_internal_load.get("extraDirs")
+    if not isinstance(hook_extra_dirs, list) or not _merge_unique_str_values(hook_extra_dirs):
+        hooks_internal_load["extraDirs"] = [DEFAULT_RUNTIME_HOOKS_DIR]
+    transforms_dir = hooks_cfg.get("transformsDir")
+    if not isinstance(transforms_dir, str) or not transforms_dir.strip():
+        hooks_cfg["transformsDir"] = DEFAULT_RUNTIME_HOOKS_TRANSFORMS_DIR
+
+    cron_cfg = cfg.get("cron")
+    if not isinstance(cron_cfg, dict):
+        cron_cfg = {}
+        cfg["cron"] = cron_cfg
+    cron_store = cron_cfg.get("store")
+    if not isinstance(cron_store, str) or not cron_store.strip():
+        cron_cfg["store"] = DEFAULT_RUNTIME_CRON_STORE
 
     # Ensure browser automation works out-of-the-box in headless containers so
     # agent/browser tasks (navigate/screenshot/pdf) are usable for new users.
@@ -1193,6 +1269,10 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
     if should_set_primary:
         model_cfg["primary"] = desired_model
         primary = desired_model
+
+    workspace = defaults.get("workspace")
+    if not isinstance(workspace, str) or not workspace.strip():
+        defaults["workspace"] = DEFAULT_RUNTIME_WORKSPACE_ROOT
 
     models_cfg = defaults.get("models")
     if not isinstance(models_cfg, dict):
@@ -1404,23 +1484,58 @@ for (const root of pluginRoots) {
   } catch (error) {
   }
 }
-const allBuiltInChannelIds = [];
-const loadableBuiltInChannelIds = [];
-for (const channelEntry of (() => {
+const manifestPayload = (() => {
   try {
     const manifest = JSON.parse(fs.readFileSync(builtInManifestPath, 'utf8'));
-    const channels = manifest && Array.isArray(manifest.channels) ? manifest.channels : [];
-    return channels.filter((entry) => entry && validPluginId(entry.channelId));
+    return {
+      builtInChannels: Array.isArray(manifest.builtInChannels)
+        ? manifest.builtInChannels
+        : (Array.isArray(manifest.channels) ? manifest.channels : []),
+      bundledExtraPlugins: Array.isArray(manifest.bundledExtraPlugins) ? manifest.bundledExtraPlugins : [],
+    };
   } catch (error) {
-    return [];
+    return { builtInChannels: [], bundledExtraPlugins: [] };
   }
-})()) {
+})();
+const allBuiltInChannelIds = [];
+const loadableBuiltInChannelIds = [];
+for (const channelEntry of manifestPayload.builtInChannels) {
+  if (!channelEntry || !validPluginId(channelEntry.channelId)) {
+    continue;
+  }
   if (!allBuiltInChannelIds.includes(channelEntry.channelId)) {
     allBuiltInChannelIds.push(channelEntry.channelId);
   }
   if (channelEntry.loadable && !loadableBuiltInChannelIds.includes(channelEntry.channelId)) {
     loadableBuiltInChannelIds.push(channelEntry.channelId);
   }
+}
+const extraPluginsById = new Map();
+const rememberExtraPlugin = (pluginEntry) => {
+  if (!pluginEntry || !validPluginId(pluginEntry.pluginId)) {
+    return;
+  }
+  const pluginId = pluginEntry.pluginId;
+  const channelId = validPluginId(pluginEntry.channelId) ? pluginEntry.channelId : pluginId;
+  const existing = extraPluginsById.get(pluginId);
+  extraPluginsById.set(pluginId, {
+    pluginId,
+    channelId,
+    loadable: pluginEntry.loadable !== false && (!existing || existing.loadable !== false),
+  });
+};
+for (const pluginEntry of manifestPayload.bundledExtraPlugins) {
+  rememberExtraPlugin(pluginEntry);
+}
+for (const pluginId of [...new Set([...explicitPluginIds, ...discoveredPluginIds])]) {
+  if (allBuiltInChannelIds.includes(pluginId)) {
+    continue;
+  }
+  rememberExtraPlugin({
+    pluginId,
+    channelId: pluginId,
+    loadable: true,
+  });
 }
 let cfg = {};
 try {
@@ -1461,9 +1576,24 @@ for (const channelId of allBuiltInChannelIds) {
   }
   delete cfg.plugins.entries[channelId];
 }
-const extraPluginIds = [...new Set([...explicitPluginIds, ...discoveredPluginIds])]
-  .filter((pluginId) => !allBuiltInChannelIds.includes(pluginId));
-for (const pluginId of extraPluginIds) {
+for (const pluginEntry of extraPluginsById.values()) {
+  const pluginId = pluginEntry.pluginId;
+  const channelId = pluginEntry.channelId;
+  const legacyPluginId = channelId !== pluginId ? channelId : '';
+  if (!pluginEntry.loadable) {
+    delete cfg.plugins.entries[pluginId];
+    if (legacyPluginId) {
+      delete cfg.plugins.entries[legacyPluginId];
+      delete cfg.channels[pluginId];
+    }
+    cfg.plugins.allow = cfg.plugins.allow.filter((entryId) => entryId !== pluginId && entryId !== legacyPluginId);
+    continue;
+  }
+  if (legacyPluginId) {
+    delete cfg.plugins.entries[legacyPluginId];
+    delete cfg.channels[pluginId];
+    cfg.plugins.allow = cfg.plugins.allow.filter((entryId) => entryId !== legacyPluginId);
+  }
   let entry = cfg.plugins.entries[pluginId];
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
     entry = {};
@@ -1472,10 +1602,10 @@ for (const pluginId of extraPluginIds) {
   if (typeof entry.enabled !== 'boolean') {
     entry.enabled = true;
   }
-  let channelCfg = cfg.channels[pluginId];
+  let channelCfg = cfg.channels[channelId];
   if (!channelCfg || typeof channelCfg !== 'object' || Array.isArray(channelCfg)) {
     channelCfg = {};
-    cfg.channels[pluginId] = channelCfg;
+    cfg.channels[channelId] = channelCfg;
   }
   if (typeof channelCfg.enabled !== 'boolean') {
     channelCfg.enabled = true;
@@ -1485,7 +1615,7 @@ for (const pluginId of extraPluginIds) {
   }
 }
 fs.mkdirSync(path.dirname('RUNTIME_CFG'), { recursive: true });
-fs.writeFileSync('RUNTIME_CFG', JSON.stringify(cfg, null, 2) + '\n');
+fs.writeFileSync('RUNTIME_CFG', JSON.stringify(cfg, null, 2) + '\\n');
 """.replace("RUNTIME_CFG", runtime_cfg)
     script = (
         f'node -e {shlex.quote(install_compatibility_shims)} || true; '
