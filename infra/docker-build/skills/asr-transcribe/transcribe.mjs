@@ -37,7 +37,7 @@ function resolveAudioSource(input) {
   if (!path.isAbsolute(abs) || !fs.existsSync(abs)) {
     throw new Error(`audio file not found: ${input}`);
   }
-  return `file://${abs}`;
+  return abs;
 }
 
 function resolveApiKey() {

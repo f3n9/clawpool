@@ -1096,6 +1096,7 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("qwen3-asr-flash", (asr_skill / "SKILL.md").read_text(encoding="utf-8"))
         self.assertIn("qwen3-asr-flash", (asr_skill / "transcribe.mjs").read_text(encoding="utf-8"))
         self.assertIn("OPENCLAW_DASHSCOPE_ASR_API_KEY", (asr_skill / "transcribe.mjs").read_text(encoding="utf-8"))
+        self.assertNotIn("file://", (asr_skill / "transcribe.mjs").read_text(encoding="utf-8"))
         self.assertIn("qwen3-tts-flash", (tts_skill / "SKILL.md").read_text(encoding="utf-8"))
         self.assertIn("qwen3-tts-flash", (tts_skill / "synthesize.mjs").read_text(encoding="utf-8"))
         self.assertIn("OPENCLAW_DASHSCOPE_TTS_API_KEY", (tts_skill / "synthesize.mjs").read_text(encoding="utf-8"))
