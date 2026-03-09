@@ -27,9 +27,7 @@ DEFAULT_OPERATOR_SCOPES = [
     "operator.pairing",
 ]
 
-DEFAULT_CHANNEL_PLUGIN_DIRS = [
-    "/opt/openclaw/extensions",
-]
+DEFAULT_CHANNEL_PLUGIN_DIRS = []
 
 PLUGIN_ID_RE = re.compile(r"^[a-z0-9._-]+$")
 
@@ -1332,8 +1330,6 @@ def _should_force_openai_responses_store():
 def _build_default_startup_cmd(start_cmd=None, force_responses_store=None):
     target = "/app/node_modules/@mariozechner/pi-ai/dist/providers/openai-responses.js"
     shared = "/app/node_modules/@mariozechner/pi-ai/dist/providers/openai-responses-shared.js"
-    bundled_ext = "/opt/openclaw/extensions"
-    runtime_ext = "/home/node/.openclaw/extensions"
     runtime_cfg = "/home/node/.openclaw/openclaw.json"
     install_compatibility_shims = """
 const fs = require('fs');
@@ -1385,7 +1381,7 @@ const fs = require('fs');
 const path = require('path');
 const { createRequire } = require('module');
 const builtInChannelRoot = '/app/extensions';
-const defaultRoots = ['/opt/openclaw/extensions'];
+const defaultRoots = [];
 const configuredRoots = (process.env.OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS || '')
   .split(',')
   .map((value) => value.trim())
@@ -1535,26 +1531,10 @@ if (!cfg.plugins.entries || typeof cfg.plugins.entries !== 'object' || Array.isA
 if (!Array.isArray(cfg.plugins.allow)) {
   cfg.plugins.allow = [];
 }
-if (!cfg.plugins.load || typeof cfg.plugins.load !== 'object' || Array.isArray(cfg.plugins.load)) {
-  cfg.plugins.load = {};
-}
-if (!Array.isArray(cfg.plugins.load.paths)) {
-  cfg.plugins.load.paths = [];
-}
 if (!cfg.channels || typeof cfg.channels !== 'object' || Array.isArray(cfg.channels)) {
   cfg.channels = {};
 }
 cfg.plugins.allow = cfg.plugins.allow.filter((pluginId) => !allBuiltInChannelIds.includes(pluginId));
-cfg.plugins.load.paths = cfg.plugins.load.paths.filter((pluginPath) => {
-  if (typeof pluginPath !== 'string' || !pluginPath.trim()) {
-    return false;
-  }
-  if (!fs.existsSync(pluginPath.trim())) {
-    return false;
-  }
-  const pluginId = path.basename(pluginPath.trim());
-  return !allBuiltInChannelIds.includes(pluginId);
-});
 for (const channelId of allBuiltInChannelIds) {
   if (loadableBuiltInChannelIds.includes(channelId)) {
     let channelCfg = cfg.channels[channelId];
@@ -1592,10 +1572,6 @@ for (const pluginId of extraPluginIds) {
   if (!cfg.plugins.allow.includes(pluginId)) {
     cfg.plugins.allow.push(pluginId);
   }
-  const runtimePluginPath = path.join('/home/node/.openclaw/extensions', pluginId);
-  if (!cfg.plugins.load.paths.includes(runtimePluginPath)) {
-    cfg.plugins.load.paths.push(runtimePluginPath);
-  }
 }
 fs.mkdirSync(path.dirname('RUNTIME_CFG'), { recursive: true });
 fs.writeFileSync('RUNTIME_CFG', JSON.stringify(cfg, null, 2) + '\\n');
@@ -1605,15 +1581,6 @@ fs.writeFileSync('RUNTIME_CFG', JSON.stringify(cfg, null, 2) + '\\n');
     if not start_cmd:
         start_cmd = "node openclaw.mjs gateway --allow-unconfigured"
     script = (
-        f'if [ -d {shlex.quote(bundled_ext)} ]; then '
-        f'mkdir -p {shlex.quote(runtime_ext)}; '
-        f'for plugin_dir in {shlex.quote(bundled_ext)}/*; do '
-        '[ -d "$plugin_dir" ] || continue; '
-        'plugin_name="$(basename "$plugin_dir")"; '
-        f'target_dir={shlex.quote(runtime_ext)}/"$plugin_name"; '
-        'if [ ! -d "$target_dir" ]; then cp -a "$plugin_dir" "$target_dir"; fi; '
-        "done; "
-        "fi; "
         f'node -e {shlex.quote(install_compatibility_shims)} || true; '
         f'node -e {shlex.quote(reconcile_channel_plugins)} || true; '
     )

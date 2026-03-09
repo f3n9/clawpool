@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import struct
 import tempfile
 import unittest
@@ -340,7 +341,7 @@ class JITProvisionTests(unittest.TestCase):
             self.assertEqual(cmd[:2], ["sh", "-lc"])
             self.assertIn("openai-responses.js", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("openai-responses-shared.js", cmd[2] if len(cmd) > 2 else "")
-            self.assertIn("/opt/openclaw/extensions", cmd[2] if len(cmd) > 2 else "")
+            self.assertNotIn("/opt/openclaw/extensions", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("/app/extensions", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("channels[channelId]", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("store: true", cmd[2] if len(cmd) > 2 else "")
@@ -756,7 +757,7 @@ class JITProvisionTests(unittest.TestCase):
             _, spec = docker.created[0]
             cmd = spec.get("Cmd", [])
             self.assertEqual(cmd[:2], ["sh", "-lc"])
-            self.assertIn("/opt/openclaw/extensions", cmd[2] if len(cmd) > 2 else "")
+            self.assertNotIn("/opt/openclaw/extensions", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("/app/extensions", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("channels[channelId]", cmd[2] if len(cmd) > 2 else "")
 
@@ -889,6 +890,11 @@ class JITProvisionTests(unittest.TestCase):
             self.assertIn("good-plugin", entries)
             self.assertNotIn("Bad Plugin", entries)
 
+    def test_dockerfile_uses_base_entrypoint_directly(self):
+        dockerfile = Path("/home/fyue/git/clawpool/infra/docker-build/Dockerfile").read_text(encoding="utf-8")
+        self.assertNotIn("docker-entrypoint-with-extensions.sh", dockerfile)
+        self.assertIn('ENTRYPOINT ["docker-entrypoint.sh"]', dockerfile)
+
     def test_default_startup_cmd_installs_runtime_compatibility_shims(self):
         cmd = _build_default_startup_cmd()
         self.assertEqual(cmd[:2], ["sh", "-lc"])
@@ -902,7 +908,7 @@ class JITProvisionTests(unittest.TestCase):
         cmd = _build_default_startup_cmd()
         self.assertEqual(cmd[:2], ["sh", "-lc"])
         script = cmd[2]
-        self.assertIn("/opt/openclaw/extensions", script)
+        self.assertNotIn("/opt/openclaw/extensions", script)
         self.assertIn("/app/extensions", script)
         self.assertIn("channel.ts", script)
         self.assertIn("channel && validPluginId(channel.id) ? channel.id : entry.name", script)
@@ -912,7 +918,7 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("channels[channelId]", script)
         self.assertIn("delete cfg.plugins.entries[channelId]", script)
         self.assertIn("plugins.allow", script)
-        self.assertIn("plugins.load.paths", script)
+        self.assertNotIn("plugins.load.paths", script)
         self.assertIn("createRequire", script)
         self.assertIn("package.json", script)
         self.assertIn("dependencies", script)
@@ -922,8 +928,8 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("loadableBuiltInChannelIds", script)
         self.assertIn("delete cfg.channels[channelId]", script)
         self.assertIn("cfg.plugins.allow = cfg.plugins.allow.filter", script)
-        self.assertIn("cfg.plugins.load.paths = cfg.plugins.load.paths.filter", script)
-        self.assertIn("fs.existsSync(pluginPath.trim())", script)
+        self.assertNotIn("cfg.plugins.load.paths = cfg.plugins.load.paths.filter", script)
+        self.assertNotIn("fs.existsSync(pluginPath.trim())", script)
         self.assertIn("!allBuiltInChannelIds.includes(pluginId)", script)
         self.assertIn("enabled = true", script)
         self.assertIn("\\n", script)
@@ -949,7 +955,7 @@ class JITProvisionTests(unittest.TestCase):
             cmd = spec.get("Cmd", [])
             self.assertEqual(cmd[:2], ["sh", "-lc"])
             script = cmd[2] if len(cmd) > 2 else ""
-            self.assertIn("/opt/openclaw/extensions", script)
+            self.assertNotIn("/opt/openclaw/extensions", script)
             self.assertIn("/app/extensions", script)
             self.assertIn("channels[channelId]", script)
             self.assertIn("openclaw.json", script)
@@ -1092,7 +1098,7 @@ class JITProvisionTests(unittest.TestCase):
             cmd = spec.get("Cmd", [])
             self.assertEqual(cmd[:2], ["sh", "-lc"])
             script = cmd[2] if len(cmd) > 2 else ""
-            self.assertIn("/opt/openclaw/extensions", script)
+            self.assertNotIn("/opt/openclaw/extensions", script)
             self.assertIn("/app/extensions", script)
             self.assertIn("channels[channelId]", script)
             self.assertNotIn("store: true", script)
@@ -1119,7 +1125,7 @@ class JITProvisionTests(unittest.TestCase):
             cmd = spec.get("Cmd", [])
             self.assertEqual(cmd[:2], ["sh", "-lc"])
             script = cmd[2] if len(cmd) > 2 else ""
-            self.assertIn("/opt/openclaw/extensions", script)
+            self.assertNotIn("/opt/openclaw/extensions", script)
             self.assertIn("/app/extensions", script)
             self.assertIn("channels[channelId]", script)
             self.assertIn("store: true", script)

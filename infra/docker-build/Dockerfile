@@ -128,12 +128,8 @@ RUN set -eux; \
       npm install --prefix /app/extensions/wecom-openclaw-plugin --no-save @wecom/aibot-node-sdk; \
     fi; \
   fi; \
-  mkdir -p /opt/openclaw/extensions; \
-  chown -R node:node /app/extensions/wecom-openclaw-plugin /opt/openclaw; \
+  chown -R node:node /app/extensions/wecom-openclaw-plugin; \
   rm -rf "$tmp_home" "$tmp_pack"
 
-COPY docker-entrypoint-with-extensions.sh /usr/local/bin/docker-entrypoint-with-extensions.sh
-RUN chmod 0755 /usr/local/bin/docker-entrypoint-with-extensions.sh
-
 USER node
-ENTRYPOINT ["docker-entrypoint-with-extensions.sh"]
+ENTRYPOINT ["docker-entrypoint.sh"]
