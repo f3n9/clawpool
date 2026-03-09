@@ -317,6 +317,25 @@ def _is_valid_plugin_id(plugin_id):
     return bool(isinstance(plugin_id, str) and PLUGIN_ID_RE.match(plugin_id.strip()))
 
 
+def _resolve_channel_plugin_id(plugin_dir):
+    plugin_name = Path(plugin_dir).name
+    package_json_path = Path(plugin_dir) / "package.json"
+    try:
+        package_json = json.loads(package_json_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, ValueError, TypeError):
+        return plugin_name
+    openclaw = package_json.get("openclaw")
+    if not isinstance(openclaw, dict):
+        return plugin_name
+    channel = openclaw.get("channel")
+    if not isinstance(channel, dict):
+        return plugin_name
+    channel_id = channel.get("id")
+    if _is_valid_plugin_id(channel_id):
+        return channel_id.strip()
+    return plugin_name
+
+
 def _resolve_default_channel_plugin_dirs():
     configured = split_csv_values(os.getenv("OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS", ""))
     return configured or list(DEFAULT_CHANNEL_PLUGIN_DIRS)
@@ -334,7 +353,7 @@ def _discover_channel_plugin_ids(plugin_dirs=None):
         for entry in sorted(root.iterdir(), key=lambda item: item.name):
             if not entry.is_dir() or not _is_valid_plugin_id(entry.name):
                 continue
-            discovered.append(entry.name)
+            discovered.append(_resolve_channel_plugin_id(entry))
     return _merge_unique_str_values(discovered)
 
 
@@ -1419,6 +1438,11 @@ const readPluginPackageJson = (pluginDir) => {
     return null;
   }
 };
+const resolveDeclaredChannelId = (packageJson) => {
+  const openclaw = packageJson && typeof packageJson === 'object' ? packageJson.openclaw : null;
+  const channel = openclaw && typeof openclaw === 'object' ? openclaw.channel : null;
+  return channel && validPluginId(channel.id) ? channel.id : null;
+};
 const resolvePluginEntrypoint = (pluginDir, packageJson) => {
   const openclaw = packageJson && typeof packageJson === 'object' ? packageJson.openclaw : null;
   const extensions = openclaw && Array.isArray(openclaw.extensions) ? openclaw.extensions : [];
@@ -1437,9 +1461,7 @@ const resolvePluginEntrypoint = (pluginDir, packageJson) => {
   return candidates.find((candidate) => typeof candidate === 'string' && fs.existsSync(candidate)) || null;
 };
 const isBuiltInChannelPlugin = (pluginDir, packageJson) => {
-  const openclaw = packageJson && typeof packageJson === 'object' ? packageJson.openclaw : null;
-  const channel = openclaw && typeof openclaw === 'object' ? openclaw.channel : null;
-  if (channel && validPluginId(channel.id)) {
+  if (resolveDeclaredChannelId(packageJson)) {
     return true;
   }
   const description = (packageJson && typeof packageJson.description === 'string')
@@ -1474,8 +1496,10 @@ for (const channelEntry of (() => {
         const dependencies = packageJson && typeof packageJson === 'object'
           ? Object.keys(packageJson.dependencies || {})
           : [];
+        const openclaw = packageJson && typeof packageJson === 'object' ? packageJson.openclaw : null;
+        const channel = openclaw && typeof openclaw === 'object' ? openclaw.channel : null;
         return {
-          channelId: entry.name,
+          channelId: channel && validPluginId(channel.id) ? channel.id : entry.name,
           loadable: dependencies.every((dependency) => canResolveDependency(channelDir, dependency)),
         };
       })

@@ -847,6 +847,25 @@ class JITProvisionTests(unittest.TestCase):
             self.assertTrue(entries.get("discord", {}).get("enabled"))
             self.assertTrue(entries.get("wecom", {}).get("enabled"))
 
+
+    def test_discovered_channel_plugin_ids_prefer_manifest_channel_id(self):
+        with tempfile.TemporaryDirectory() as plugdir:
+            plugin_dir = os.path.join(plugdir, "wecom-openclaw-plugin")
+            os.makedirs(plugin_dir, exist_ok=True)
+            with open(os.path.join(plugin_dir, "package.json"), "w", encoding="utf-8") as f:
+                json.dump({"openclaw": {"channel": {"id": "wecom"}}}, f)
+            discovered = instance_manager_main._discover_channel_plugin_ids([plugdir])
+            self.assertEqual(discovered, ["wecom"])
+
+    def test_discovered_channel_plugin_ids_fall_back_to_directory_name(self):
+        with tempfile.TemporaryDirectory() as plugdir:
+            plugin_dir = os.path.join(plugdir, "discord")
+            os.makedirs(plugin_dir, exist_ok=True)
+            with open(os.path.join(plugin_dir, "package.json"), "w", encoding="utf-8") as f:
+                json.dump({"name": "discord-plugin"}, f)
+            discovered = instance_manager_main._discover_channel_plugin_ids([plugdir])
+            self.assertEqual(discovered, ["discord"])
+
     def test_invalid_discovered_plugin_names_are_ignored(self):
         docker = FakeDocker()
         docker.existing.add("openclaw-u1001")
@@ -886,6 +905,7 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("/opt/openclaw/extensions", script)
         self.assertIn("/app/extensions", script)
         self.assertIn("channel.ts", script)
+        self.assertIn("channel && validPluginId(channel.id) ? channel.id : entry.name", script)
         self.assertIn("OPENCLAW_DEFAULT_CHANNEL_PLUGIN_DIRS", script)
         self.assertIn("openclaw.json", script)
         self.assertIn("plugins.entries", script)

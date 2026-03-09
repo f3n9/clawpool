@@ -106,35 +106,31 @@ RUN if [ "$INSTALL_PLAYWRIGHT" = "1" ]; then \
       chown -R node:node "${PLAYWRIGHT_BROWSERS_PATH}"; \
     fi
 
-USER node
+USER root
 
 ENV HOME=/home/node
 ARG NPM_REGISTRY=https://registry.npmjs.org
 ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
-# Install plugin into the node user's OpenClaw home/extensions area
+# Install the official WeCom plugin as an image-bundled built-in extension.
 RUN set -eux; \
-  openclaw plugins install @wecom/wecom-openclaw-plugin; \
-  src_dir="$({ find /home/node/.openclaw/extensions -mindepth 1 -maxdepth 1 -type d | while read -r candidate; do if [ -f "$candidate/openclaw.plugin.json" ] && grep -q '"id"[[:space:]]*:[[:space:]]*"wecom"' "$candidate/openclaw.plugin.json"; then printf '%s\n' "$candidate"; break; fi; done; } || true)"; \
-  if [ -z "$src_dir" ]; then \
-    src_dir="$({ find /home/node/.openclaw/extensions -mindepth 1 -maxdepth 1 -type d \( -name 'wecom' -o -name 'wecom-openclaw-plugin' \) | head -n1; } || true)"; \
+  tmp_home="$(mktemp -d)"; \
+  tmp_pack="$(mktemp -d)"; \
+  rm -rf /app/extensions/wecom-openclaw-plugin; \
+  mkdir -p /app/extensions/wecom-openclaw-plugin; \
+  HOME="$tmp_home" npm pack --pack-destination "$tmp_pack" @wecom/wecom-openclaw-plugin; \
+  tar -xzf "$tmp_pack"/wecom-wecom-openclaw-plugin-*.tgz --strip-components=1 -C /app/extensions/wecom-openclaw-plugin package; \
+  runtime_deps="$(jq -r '.dependencies // {} | to_entries[] | select(.key != "@wecom/wecom-openclaw-plugin") | "\(.key)@\(.value)"' /app/extensions/wecom-openclaw-plugin/package.json | paste -sd ' ' -)"; \
+  if [ -n "$runtime_deps" ]; then \
+    npm install --prefix /app/extensions/wecom-openclaw-plugin --no-save $runtime_deps; \
   fi; \
-  [ -n "$src_dir" ]; \
-  if [ "$(basename "$src_dir")" != "wecom" ]; then \
-    rm -rf /home/node/.openclaw/extensions/wecom; \
-    mv "$src_dir" /home/node/.openclaw/extensions/wecom; \
-  fi; \
-  if grep -Rqs "@wecom/aibot-node-sdk" /home/node/.openclaw/extensions/wecom/dist; then \
-    if [ ! -d /home/node/.openclaw/extensions/wecom/node_modules/@wecom/aibot-node-sdk ]; then \
-      npm install --prefix /home/node/.openclaw/extensions/wecom --no-save @wecom/aibot-node-sdk; \
+  if grep -Rqs "@wecom/aibot-node-sdk" /app/extensions/wecom-openclaw-plugin/dist; then \
+    if [ ! -d /app/extensions/wecom-openclaw-plugin/node_modules/@wecom/aibot-node-sdk ]; then \
+      npm install --prefix /app/extensions/wecom-openclaw-plugin --no-save @wecom/aibot-node-sdk; \
     fi; \
-  fi
-
-USER root
-# Keep a bundled copy outside /home/node/.openclaw (runtime bind mount)
-RUN mkdir -p /opt/openclaw/extensions \
-  && rm -rf /opt/openclaw/extensions/wecom \
-  && cp -a /home/node/.openclaw/extensions/wecom /opt/openclaw/extensions/wecom \
-  && chown -R node:node /opt/openclaw
+  fi; \
+  mkdir -p /opt/openclaw/extensions; \
+  chown -R node:node /app/extensions/wecom-openclaw-plugin /opt/openclaw; \
+  rm -rf "$tmp_home" "$tmp_pack"
 
 COPY docker-entrypoint-with-extensions.sh /usr/local/bin/docker-entrypoint-with-extensions.sh
 RUN chmod 0755 /usr/local/bin/docker-entrypoint-with-extensions.sh
