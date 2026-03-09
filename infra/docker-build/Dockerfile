@@ -1,5 +1,5 @@
 #ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.3.2
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.3.7-slim-amd64
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.3.8-slim-amd64
 FROM ${OPENCLAW_BASE_IMAGE}
 
 USER root
@@ -130,6 +130,7 @@ RUN set -eux; \
   fi; \
   chown -R node:node /app/extensions/wecom-openclaw-plugin; \
   rm -rf "$tmp_home" "$tmp_pack"
+ARG OPENCLAW_BUNDLED_EXTRA_PLUGIN_IDS=wecom-openclaw-plugin
 RUN node <<'EOF'
 const fs = require('fs');
 const path = require('path');
@@ -137,6 +138,12 @@ const { createRequire } = require('module');
 const builtInChannelRoot = '/app/extensions';
 const manifestPath = path.join(builtInChannelRoot, '.openclaw-builtins.json');
 const validPluginId = (value) => /^[a-z0-9._-]+$/.test(value);
+const bundledExtraPluginIds = new Set(
+  (process.env.OPENCLAW_BUNDLED_EXTRA_PLUGIN_IDS || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(validPluginId)
+);
 const readPluginPackageJson = (pluginDir) => {
   const packageJsonPath = path.join(pluginDir, 'package.json');
   if (!fs.existsSync(packageJsonPath)) return null;
@@ -195,17 +202,24 @@ const canResolveDependency = (pluginDir, dependency) => {
     }
   }
 };
-const channels = [];
+const builtInChannels = [];
+const bundledExtraPlugins = [];
 for (const entry of fs.readdirSync(builtInChannelRoot, { withFileTypes: true })) {
   if (!entry.isDirectory() || !validPluginId(entry.name)) continue;
-  const channelDir = path.join(builtInChannelRoot, entry.name);
+  const pluginId = entry.name;
+  const channelDir = path.join(builtInChannelRoot, pluginId);
   const packageJson = readPluginPackageJson(channelDir);
-  if (!isBuiltInChannelPlugin(channelDir, packageJson)) continue;
   const dependencies = packageJson && typeof packageJson === 'object' ? Object.keys(packageJson.dependencies || {}) : [];
-  const channelId = resolveDeclaredChannelId(packageJson) || entry.name;
-  channels.push({ channelId, loadable: dependencies.every((dependency) => canResolveDependency(channelDir, dependency)) });
+  const channelId = resolveDeclaredChannelId(packageJson) || pluginId;
+  const loadable = dependencies.every((dependency) => canResolveDependency(channelDir, dependency));
+  if (bundledExtraPluginIds.has(pluginId)) {
+    bundledExtraPlugins.push({ pluginId, channelId, loadable });
+    continue;
+  }
+  if (!isBuiltInChannelPlugin(channelDir, packageJson)) continue;
+  builtInChannels.push({ channelId, loadable });
 }
-fs.writeFileSync(manifestPath, JSON.stringify({ channels }, null, 2) + '\n');
+fs.writeFileSync(manifestPath, JSON.stringify({ channels: builtInChannels, builtInChannels, bundledExtraPlugins }, null, 2) + '\n');
 EOF
 RUN chown node:node /app/extensions/.openclaw-builtins.json
 
