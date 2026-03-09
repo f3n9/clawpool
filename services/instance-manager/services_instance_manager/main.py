@@ -810,16 +810,6 @@ def _public_key_raw_base64url_from_pem(public_key_pem):
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def _model_supports_reasoning(model_id, openai_api):
-    api = (openai_api or "").strip().lower()
-    if api not in {"openai-responses", "openai-codex-responses"}:
-        return False
-    lowered = (model_id or "").strip().lower()
-    if lowered.startswith("kimi") or "-chat" in lowered:
-        return False
-    return True
-
-
 def _normalize_openai_compatible_base_url(url, default_url):
     value = (url or "").strip() or default_url
     parsed = urlparse(value)
@@ -1313,7 +1303,7 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
         {
             "id": model_id,
             "name": model_id,
-            "reasoning": _model_supports_reasoning(model_id, openai_api),
+            "reasoning": True,
             "input": ["text", "image"],
             "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
             "contextWindow": 200000,
@@ -1324,7 +1314,7 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
     providers["openai"] = openai_provider
 
     provider_models = {
-        "openai": (openai_model_ids, openai_api),
+        "openai": openai_model_ids,
     }
     if dashscope_api_key:
         dashscope_provider = providers.get("dashscope")
@@ -1340,7 +1330,7 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
             {
                 "id": model_id,
                 "name": model_id,
-                "reasoning": False,
+                "reasoning": True,
                 "input": ["text", "image"],
                 "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                 "contextWindow": 200000,
@@ -1349,10 +1339,10 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
             for model_id in dashscope_model_ids
         ]
         providers["dashscope"] = dashscope_provider
-        provider_models["dashscope"] = (dashscope_model_ids, "openai-completions")
+        provider_models["dashscope"] = dashscope_model_ids
     else:
         providers.pop("dashscope", None)
-    for provider_id, (model_ids, provider_api) in provider_models.items():
+    for provider_id, model_ids in provider_models.items():
         for model_id in model_ids:
             model_ref = f"{provider_id}/{model_id}"
             model_entry = models_cfg.get(model_ref)
@@ -1365,9 +1355,6 @@ def _ensure_runtime_config(runtime_dir, uid, gid, gateway_token=""):
                 model_entry["params"] = params
             params.setdefault("transport", "sse")
             params.setdefault("openaiWsWarmup", False)
-            if not _model_supports_reasoning(model_id, provider_api):
-                params.pop("reasoningEffort", None)
-                params.pop("reasoningSummary", None)
 
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=True, indent=2)

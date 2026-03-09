@@ -753,8 +753,8 @@ class JITProvisionTests(unittest.TestCase):
             self.assertEqual(provider.get("api"), "openai-responses")
             reasoning_map = {m.get("id"): m.get("reasoning") for m in provider.get("models", [])}
             self.assertEqual(reasoning_map.get("gpt-5.2"), True)
-            self.assertEqual(reasoning_map.get("gpt-5.3-chat"), False)
-            self.assertEqual(reasoning_map.get("Kimi-K2.5"), False)
+            self.assertEqual(reasoning_map.get("gpt-5.3-chat"), True)
+            self.assertEqual(reasoning_map.get("Kimi-K2.5"), True)
 
     def test_default_model_falls_back_to_dashscope_minimax_when_env_missing(self):
         docker = FakeDocker()
@@ -787,11 +787,13 @@ class JITProvisionTests(unittest.TestCase):
             self.assertIn("gpt-5.4", openai_ids)
             self.assertIn("gpt-5.3-codex", openai_ids)
             self.assertIn("gpt-5.3-chat", openai_ids)
-            dashscope_ids = [model.get("id") for model in providers.get("dashscope", {}).get("models", [])]
+            dashscope_models = providers.get("dashscope", {}).get("models", [])
+            dashscope_ids = [model.get("id") for model in dashscope_models]
             self.assertEqual(
                 dashscope_ids,
                 ["MiniMax-M2.5", "kimi-k2.5", "deepseek-v3.2", "qwen3.5-flash"],
             )
+            self.assertTrue(all(model.get("reasoning") is True for model in dashscope_models))
 
     def test_adds_dashscope_provider_with_expected_defaults(self):
         docker = FakeDocker()
@@ -907,13 +909,65 @@ class JITProvisionTests(unittest.TestCase):
                 cfg = json.load(f)
             provider = cfg.get("models", {}).get("providers", {}).get("openai", {})
             self.assertEqual(provider.get("api"), "openai-completions")
-            self.assertTrue(all(m.get("reasoning") is False for m in provider.get("models", [])))
+            self.assertTrue(all(m.get("reasoning") is True for m in provider.get("models", [])))
             _, spec = docker.created[0]
             cmd = spec.get("Cmd", [])
             self.assertEqual(cmd[:2], ["sh", "-lc"])
             self.assertNotIn("/opt/openclaw/extensions", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("/app/extensions", cmd[2] if len(cmd) > 2 else "")
             self.assertIn("channels[channelId]", cmd[2] if len(cmd) > 2 else "")
+
+    def test_preserves_reasoning_params_for_all_seeded_models(self):
+        docker = FakeDocker()
+        docker.existing.add("openclaw-u1013")
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "OPENCLAW_USERS_ROOT": tmpdir,
+                "OPENCLAW_DEFAULT_OPENAI_KEY": "k-test",
+                "OPENCLAW_DEFAULT_OPENAI_ENDPOINT": "https://api.openai.com/v1",
+                "OPENCLAW_ALLOWED_MODELS": "gpt-5.2,Kimi-K2.5",
+                "OPENCLAW_DEFAULT_OPENAI_MODEL": "Kimi-K2.5",
+                "OPENCLAW_OPENAI_API": "openai-completions",
+                "OPENCLAW_DASHSCOPE_API_KEY": "dashscope-test-key",
+            },
+            clear=False,
+        ):
+            os.makedirs(f"{tmpdir}/u1013/runtime", exist_ok=True)
+            with open(f"{tmpdir}/u1013/runtime/openclaw.json", "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "agents": {
+                            "defaults": {
+                                "models": {
+                                    "openai/Kimi-K2.5": {
+                                        "params": {
+                                            "reasoningEffort": "high",
+                                            "reasoningSummary": "auto",
+                                        }
+                                    },
+                                    "dashscope/MiniMax-M2.5": {
+                                        "params": {
+                                            "reasoningEffort": "medium",
+                                            "reasoningSummary": "detailed",
+                                        }
+                                    },
+                                }
+                            }
+                        }
+                    },
+                    f,
+                )
+            status = ensure_container_exists(docker, identity="u1013", container="openclaw-u1013")
+            self.assertEqual(status, "existing")
+            with open(f"{tmpdir}/u1013/runtime/openclaw.json", "r", encoding="utf-8") as f:
+                cfg = json.load(f)
+            openai_params = cfg.get("agents", {}).get("defaults", {}).get("models", {}).get("openai/Kimi-K2.5", {}).get("params", {})
+            dashscope_params = cfg.get("agents", {}).get("defaults", {}).get("models", {}).get("dashscope/MiniMax-M2.5", {}).get("params", {})
+            self.assertEqual(openai_params.get("reasoningEffort"), "high")
+            self.assertEqual(openai_params.get("reasoningSummary"), "auto")
+            self.assertEqual(dashscope_params.get("reasoningEffort"), "medium")
+            self.assertEqual(dashscope_params.get("reasoningSummary"), "detailed")
 
     def test_runtime_seed_does_not_persist_default_channel_plugins(self):
         docker = FakeDocker()
