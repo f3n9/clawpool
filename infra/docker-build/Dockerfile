@@ -112,11 +112,27 @@ ENV HOME=/home/node
 ARG NPM_REGISTRY=https://registry.npmjs.org
 ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
 # Install plugin into the node user's OpenClaw home/extensions area
-RUN openclaw plugins install @yanhaidao/wecom
+RUN set -eux; \
+  openclaw plugins install @wecom/wecom-openclaw-plugin; \
+  src_dir="$({ find /home/node/.openclaw/extensions -mindepth 1 -maxdepth 1 -type d | while read -r candidate; do if [ -f "$candidate/openclaw.plugin.json" ] && grep -q '"id"[[:space:]]*:[[:space:]]*"wecom"' "$candidate/openclaw.plugin.json"; then printf '%s\n' "$candidate"; break; fi; done; } || true)"; \
+  if [ -z "$src_dir" ]; then \
+    src_dir="$({ find /home/node/.openclaw/extensions -mindepth 1 -maxdepth 1 -type d \( -name 'wecom' -o -name 'wecom-openclaw-plugin' \) | head -n1; } || true)"; \
+  fi; \
+  [ -n "$src_dir" ]; \
+  if [ "$(basename "$src_dir")" != "wecom" ]; then \
+    rm -rf /home/node/.openclaw/extensions/wecom; \
+    mv "$src_dir" /home/node/.openclaw/extensions/wecom; \
+  fi; \
+  if grep -Rqs "@wecom/aibot-node-sdk" /home/node/.openclaw/extensions/wecom/dist; then \
+    if [ ! -d /home/node/.openclaw/extensions/wecom/node_modules/@wecom/aibot-node-sdk ]; then \
+      npm install --prefix /home/node/.openclaw/extensions/wecom --no-save @wecom/aibot-node-sdk; \
+    fi; \
+  fi
 
 USER root
 # Keep a bundled copy outside /home/node/.openclaw (runtime bind mount)
 RUN mkdir -p /opt/openclaw/extensions \
+  && rm -rf /opt/openclaw/extensions/wecom \
   && cp -a /home/node/.openclaw/extensions/wecom /opt/openclaw/extensions/wecom \
   && chown -R node:node /opt/openclaw
 
