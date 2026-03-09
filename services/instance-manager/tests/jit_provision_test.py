@@ -1101,6 +1101,18 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("qwen3-tts-flash", (tts_skill / "synthesize.mjs").read_text(encoding="utf-8"))
         self.assertIn("OPENCLAW_DASHSCOPE_TTS_API_KEY", (tts_skill / "synthesize.mjs").read_text(encoding="utf-8"))
 
+    def test_bundled_asr_script_uses_compatible_audio_input_shapes(self):
+        script = Path("/home/fyue/git/clawpool/infra/docker-build/skills/asr-transcribe/transcribe.mjs").read_text(encoding="utf-8")
+        self.assertIn("/compatible-mode/v1/chat/completions", script)
+        self.assertIn("data:${mimeType};base64,${audioBase64}", script)
+        self.assertIn("type: 'input_audio'", script)
+
+    def test_bundled_tts_script_uses_official_input_shape(self):
+        script = Path("/home/fyue/git/clawpool/infra/docker-build/skills/tts-synthesize/synthesize.mjs").read_text(encoding="utf-8")
+        self.assertIn("language_type", script)
+        self.assertIn("input:", script)
+        self.assertIn("voice:", script)
+
     def test_dockerfile_bundles_speech_skills(self):
         dockerfile = Path("/home/fyue/git/clawpool/infra/docker-build/Dockerfile").read_text(encoding="utf-8")
         self.assertIn("/app/skills", dockerfile)

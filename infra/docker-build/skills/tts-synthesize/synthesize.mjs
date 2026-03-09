@@ -5,7 +5,9 @@ import process from 'node:process';
 
 const DEFAULT_BASE_URL = 'https://dashscope-yxai.hatch.yinxiang.com/api/v1/services/aigc/multimodal-generation/generation';
 const DEFAULT_MODEL = 'qwen3-tts-flash';
-const DEFAULT_FORMAT = 'mp3';
+const DEFAULT_FORMAT = 'wav';
+const DEFAULT_LANGUAGE_TYPE = 'Chinese';
+const DEFAULT_VOICE = 'Cherry';
 
 function parseArgs(argv) {
   const out = { text: '', textFile: '', output: '', voice: '', json: false };
@@ -141,29 +143,19 @@ async function main() {
   const apiKey = resolveApiKey();
   const baseUrl = (process.env.OPENCLAW_DASHSCOPE_TTS_BASE_URL || DEFAULT_BASE_URL).trim();
   const model = (process.env.OPENCLAW_DASHSCOPE_TTS_MODEL || DEFAULT_MODEL).trim();
-  const voice = (args.voice || process.env.OPENCLAW_DASHSCOPE_TTS_VOICE || '').trim();
+  const voice = (args.voice || process.env.OPENCLAW_DASHSCOPE_TTS_VOICE || DEFAULT_VOICE).trim();
+  const languageType = (process.env.OPENCLAW_DASHSCOPE_TTS_LANGUAGE_TYPE || DEFAULT_LANGUAGE_TYPE).trim();
   const outputPath = path.resolve(args.output || defaultOutputPath());
   ensureDir(path.dirname(outputPath));
 
   const payload = {
     model,
     input: {
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { text },
-          ],
-        },
-      ],
-    },
-    parameters: {
-      response_format: 'mp3',
+      text,
+      voice,
+      language_type: languageType,
     },
   };
-  if (voice) {
-    payload.parameters.voice = voice;
-  }
 
   const response = await fetch(baseUrl, {
     method: 'POST',
