@@ -949,6 +949,14 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("pluginEntry.channelId", script)
         self.assertIn("delete cfg.plugins.entries[legacyPluginId]", script)
 
+    def test_default_startup_cmd_migrates_legacy_wecom_plugin_id(self):
+        cmd = _build_default_startup_cmd("node openclaw.mjs gateway --allow-unconfigured", True)
+        script = cmd[2]
+        self.assertIn("legacyPluginAliases", script)
+        self.assertIn("legacyPluginAliases.set(channelId, pluginId)", script)
+        self.assertIn("pluginId = legacyPluginAliases.get(pluginId) || pluginId", script)
+        self.assertIn("entryId !== legacyPluginId", script)
+
     def test_invalid_discovered_plugin_names_are_ignored(self):
         docker = FakeDocker()
         docker.existing.add("openclaw-u1001")

@@ -356,7 +356,7 @@ def _discover_channel_plugin_ids(plugin_dirs=None):
 
 
 def _default_channel_plugin_ids():
-    configured = split_csv_values(os.getenv("OPENCLAW_DEFAULT_CHANNEL_PLUGINS", "wecom"))
+    configured = split_csv_values(os.getenv("OPENCLAW_DEFAULT_CHANNEL_PLUGINS", ""))
     discovered = _discover_channel_plugin_ids()
     return _merge_unique_str_values([*configured, *discovered])
 
@@ -1511,12 +1511,16 @@ for (const channelEntry of manifestPayload.builtInChannels) {
   }
 }
 const extraPluginsById = new Map();
+const legacyPluginAliases = new Map();
 const rememberExtraPlugin = (pluginEntry) => {
   if (!pluginEntry || !validPluginId(pluginEntry.pluginId)) {
     return;
   }
   const pluginId = pluginEntry.pluginId;
   const channelId = validPluginId(pluginEntry.channelId) ? pluginEntry.channelId : pluginId;
+  if (channelId !== pluginId) {
+    legacyPluginAliases.set(channelId, pluginId);
+  }
   const existing = extraPluginsById.get(pluginId);
   extraPluginsById.set(pluginId, {
     pluginId,
@@ -1527,7 +1531,8 @@ const rememberExtraPlugin = (pluginEntry) => {
 for (const pluginEntry of manifestPayload.bundledExtraPlugins) {
   rememberExtraPlugin(pluginEntry);
 }
-for (const pluginId of [...new Set([...explicitPluginIds, ...discoveredPluginIds])]) {
+for (let pluginId of [...new Set([...explicitPluginIds, ...discoveredPluginIds])]) {
+  pluginId = legacyPluginAliases.get(pluginId) || pluginId;
   if (allBuiltInChannelIds.includes(pluginId)) {
     continue;
   }
