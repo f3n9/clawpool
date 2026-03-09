@@ -33,7 +33,7 @@ if [[ "$1" == "inspect" && "$2" == "openclaw-u1001" ]]; then
     "State": {"Running": true},
     "Config": {
       "Env": ["OPENAI_API_KEY=k1", "OPENCLAW_GATEWAY_TOKEN=t1"],
-      "Cmd": ["sh", "-lc", "exec node openclaw.mjs gateway --allow-unconfigured"],
+      "Cmd": ["sh", "-lc", "node -e 'a\nSPLIT_SENTINEL\nb' || true; exec node openclaw.mjs gateway --allow-unconfigured"],
       "WorkingDir": "/app",
       "ExposedPorts": {"18789/tcp": {}},
       "Labels": {"openclaw.managed": "true", "openclaw.identity": "u1001", "org.opencontainers.image.version": "2026.3.2"}
@@ -75,7 +75,16 @@ if [[ "$1" == "inspect" && "$2" == "openclaw-u1002" ]]; then
 JSON
   exit 0
 fi
-if [[ "$1" == "stop" || "$1" == "rename" || "$1" == "rm" || "$1" == "start" || "$1" == "create" ]]; then
+if [[ "$1" == "create" ]]; then
+  printf 'create-argc=%s\n' "$#" >> "$DOCKER_LOG"
+  idx=0
+  for arg in "$@"; do
+    printf 'create-arg-%03d=%q\n' "$idx" "$arg" >> "$DOCKER_LOG"
+    idx=$((idx + 1))
+  done
+  exit 0
+fi
+if [[ "$1" == "stop" || "$1" == "rename" || "$1" == "rm" || "$1" == "start" ]]; then
   exit 0
 fi
 printf 'unexpected docker invocation: %s\n' "$*" >&2
@@ -148,6 +157,7 @@ ENV
   assert_contains '--label openclaw.identity=u1001' "$DOCKER_LOG"
   assert_contains '-e OPENAI_API_KEY=k1' "$DOCKER_LOG"
   assert_contains 'yx-openclaw:20260308 sh -lc exec node openclaw.mjs gateway --allow-unconfigured' "$DOCKER_LOG"
+  assert_contains "a\\nSPLIT_SENTINEL\\nb" "$DOCKER_LOG"
   assert_contains 'start openclaw-u1001' "$DOCKER_LOG"
   assert_not_contains 'start openclaw-u1002' "$DOCKER_LOG"
   assert_contains 'rm openclaw-u1001.previous' "$DOCKER_LOG"

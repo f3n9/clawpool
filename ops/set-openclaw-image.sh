@@ -158,7 +158,8 @@ cmd = config.get('Cmd') or []
 if isinstance(cmd, list):
     args.extend(cmd)
 for arg in args:
-    print(arg)
+    sys.stdout.buffer.write(arg.encode('utf-8'))
+    sys.stdout.buffer.write(b'\0')
 PY
 }
 
@@ -190,7 +191,7 @@ print('true' if payload.get('State', {}).get('Running') else 'false')
 PY
 )"
 
-  mapfile -t create_args < <(create_args_from_inspect "$inspect_file")
+  mapfile -d '' -t create_args < <(create_args_from_inspect "$inspect_file")
 
   if [[ "$was_running" == "true" ]]; then
     "$DOCKER_BIN" stop "$name" >/dev/null
