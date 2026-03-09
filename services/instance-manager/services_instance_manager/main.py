@@ -1517,11 +1517,13 @@ const rememberExtraPlugin = (pluginEntry) => {
     return;
   }
   const pluginId = pluginEntry.pluginId;
-  const channelId = validPluginId(pluginEntry.channelId) ? pluginEntry.channelId : pluginId;
+  const existing = extraPluginsById.get(pluginId);
+  const channelId = existing && validPluginId(existing.channelId)
+    ? existing.channelId
+    : (validPluginId(pluginEntry.channelId) ? pluginEntry.channelId : pluginId);
   if (channelId !== pluginId) {
     legacyPluginAliases.set(channelId, pluginId);
   }
-  const existing = extraPluginsById.get(pluginId);
   extraPluginsById.set(pluginId, {
     pluginId,
     channelId,

@@ -957,6 +957,14 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("pluginId = legacyPluginAliases.get(pluginId) || pluginId", script)
         self.assertIn("entryId !== legacyPluginId", script)
 
+    def test_default_startup_cmd_preserves_manifest_channel_id_for_extra_plugin(self):
+        cmd = _build_default_startup_cmd("node openclaw.mjs gateway --allow-unconfigured", True)
+        script = cmd[2]
+        self.assertIn("const existing = extraPluginsById.get(pluginId)", script)
+        self.assertIn("validPluginId(existing.channelId)", script)
+        self.assertIn("? existing.channelId", script)
+        self.assertIn("let channelCfg = cfg.channels[channelId]", script)
+
     def test_invalid_discovered_plugin_names_are_ignored(self):
         docker = FakeDocker()
         docker.existing.add("openclaw-u1001")
