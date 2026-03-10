@@ -1999,8 +1999,8 @@ CONSOLE_STATIC_FILES = {
 }
 
 HELP_STATIC_FILES = {
-    "dashboard-overview.svg": "image/svg+xml; charset=utf-8",
-    "console-overview.svg": "image/svg+xml; charset=utf-8",
+    "dashboard-overview.png": "image/png",
+    "console-overview.png": "image/png",
 }
 
 
@@ -2338,8 +2338,8 @@ class Handler(BaseHTTPRequestHandler):
           </div>
         </section>
         <figure>
-          <img src="/help/assets/dashboard-overview.svg" alt="Dashboard 界面示意图" />
-          <figcaption>Dashboard 主要用于聊天、查看会话和继续追问。第一次进入后，先发送“你好”最稳妥。</figcaption>
+          <img src="/help/assets/dashboard-overview.png" alt="Dashboard 真实界面截图" />
+          <figcaption>这是 Dashboard 的真实界面截图，主要用于聊天、查看会话和继续追问。第一次进入后，先发送“你好”最稳妥。</figcaption>
         </figure>
       </div>
       <section class="section" style="margin-top: 18px;">
@@ -2357,8 +2357,8 @@ class Handler(BaseHTTPRequestHandler):
       </section>
       <div class="grid two">
         <figure>
-          <img src="/help/assets/console-overview.svg" alt="控制台界面示意图" />
-          <figcaption>控制台适合查看状态、执行命令和排查问题；如果你不熟悉命令行，也可以先让 OpenClaw 告诉你要执行什么。</figcaption>
+          <img src="/help/assets/console-overview.png" alt="控制台真实界面截图" />
+          <figcaption>这是控制台的真实界面截图，适合查看状态、执行命令和排查问题；如果你不熟悉命令行，也可以先让 OpenClaw 告诉你要执行什么。</figcaption>
         </figure>
         <section class="section">
           <h2>控制台是做什么的？</h2>

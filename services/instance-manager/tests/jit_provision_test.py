@@ -57,8 +57,8 @@ class JITProvisionTests(unittest.TestCase):
         self.assertTrue((CONSOLE_STATIC_ROOT / "xterm-addon-fit.js").is_file())
 
     def test_help_static_assets_exist(self):
-        self.assertTrue((HELP_STATIC_ROOT / "dashboard-overview.svg").is_file())
-        self.assertTrue((HELP_STATIC_ROOT / "console-overview.svg").is_file())
+        self.assertTrue((HELP_STATIC_ROOT / "dashboard-overview.png").is_file())
+        self.assertTrue((HELP_STATIC_ROOT / "console-overview.png").is_file())
 
     def test_help_page_contains_navigation_and_guidance(self):
         captured = {}
@@ -83,6 +83,8 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("建议优先配置 Telegram、Discord", captured["body"])
         self.assertIn("查看企微官方配置说明", captured["body"])
         self.assertIn("https://open.work.weixin.qq.com/help2/pc/cat?doc_id=21657", captured["body"])
+        self.assertIn("/help/assets/dashboard-overview.png", captured["body"])
+        self.assertIn("/help/assets/console-overview.png", captured["body"])
         self.assertIn("window.open", captured["body"])
 
     def test_do_get_routes_help_page(self):
@@ -99,7 +101,7 @@ class JITProvisionTests(unittest.TestCase):
 
     def test_do_get_routes_help_asset(self):
         handler = Handler.__new__(Handler)
-        handler.path = "/help/assets/dashboard-overview.svg"
+        handler.path = "/help/assets/dashboard-overview.png"
         called = []
         handler._help_page = lambda: called.append("help")
         handler._serve_help_asset = lambda asset_path: called.append(asset_path)
@@ -107,7 +109,7 @@ class JITProvisionTests(unittest.TestCase):
 
         handler.do_GET()
 
-        self.assertEqual(called, ["/help/assets/dashboard-overview.svg"])
+        self.assertEqual(called, ["/help/assets/dashboard-overview.png"])
 
     def test_traefik_routes_help_directly_to_instance_manager(self):
         config = Path("/home/fyue/git/clawpool/infra/traefik/dynamic.yml").read_text(encoding="utf-8")
