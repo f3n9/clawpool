@@ -79,6 +79,10 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("/models", captured["body"])
         self.assertIn("/channels", captured["body"])
         self.assertIn("企微", captured["body"])
+        self.assertIn("企微暂不支持文件接收", captured["body"])
+        self.assertIn("建议优先配置 Telegram、Discord", captured["body"])
+        self.assertIn("查看企微官方配置说明", captured["body"])
+        self.assertIn("https://open.work.weixin.qq.com/help2/pc/cat?doc_id=21657", captured["body"])
         self.assertIn("window.open", captured["body"])
 
     def test_do_get_routes_help_page(self):

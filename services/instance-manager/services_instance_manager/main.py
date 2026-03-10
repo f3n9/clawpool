@@ -2278,6 +2278,25 @@ class Handler(BaseHTTPRequestHandler):
         background: var(--green-soft);
       }
       .tip strong { display: block; margin-bottom: 6px; }
+      .cta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 16px;
+      }
+      .cta-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        padding: 0 18px;
+        border-radius: 999px;
+        border: 1px solid var(--blue);
+        background: var(--blue);
+        color: #fff;
+        font-weight: 700;
+        text-decoration: none;
+      }
       @media (max-width: 720px) {
         .hero h1 { font-size: 28px; }
         .topbar { padding: 12px 14px; }
@@ -2358,11 +2377,19 @@ class Handler(BaseHTTPRequestHandler):
       <section class="section" style="margin-top: 18px;">
         <h2>配置企微、Telegram 等 IM</h2>
         <p>如果你希望通过企微、Telegram 等 IM 和 OpenClaw 对话，可以先在聊天中使用 <code>/channels</code> 查看当前渠道状态，再按提示完成配置。</p>
+        <div class="tip">
+          <strong>先看这一条</strong>
+          企微暂不支持文件接收；如果你经常需要发送文件、图片或语音，建议优先配置 Telegram、Discord 等渠道。
+        </div>
         <ul class="steps">
-          <li>企微：适合公司内部使用，配置完成后可直接在企微里发消息给 OpenClaw。</li>
-          <li>Telegram：适合个人或跨设备使用，配置完成后可通过机器人聊天。</li>
+          <li>企微：适合公司内部使用，适合文字沟通；开始配置前建议先阅读官方接入说明。</li>
+          <li>Telegram：适合个人或跨设备使用，体验更完整，推荐优先配置。</li>
+          <li>Discord：如果你平时就在用，也适合作为更灵活的日常入口。</li>
           <li>其他 IM：也可以在 <code>/channels</code> 里查看是否已启用，以及是否还需要补充配置。</li>
         </ul>
+        <div class="cta-row">
+          <a class="cta-button" href="https://open.work.weixin.qq.com/help2/pc/cat?doc_id=21657" target="_blank" rel="noreferrer">查看企微官方配置说明</a>
+        </div>
       </section>
     </main>
     <script>
