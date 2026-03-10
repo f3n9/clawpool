@@ -1991,10 +1991,16 @@ THROTTLE = StartupThrottle(max_concurrent=os.getenv("OPENCLAW_STARTUP_MAX_CONCUR
 PROVISION_LOCKS = {}
 PROVISION_LOCKS_GUARD = threading.Lock()
 CONSOLE_STATIC_ROOT = Path(__file__).resolve().parent / "static" / "console"
+HELP_STATIC_ROOT = Path(__file__).resolve().parent / "static" / "help"
 CONSOLE_STATIC_FILES = {
     "xterm.js": "application/javascript; charset=utf-8",
     "xterm.css": "text/css; charset=utf-8",
     "xterm-addon-fit.js": "application/javascript; charset=utf-8",
+}
+
+HELP_STATIC_FILES = {
+    "dashboard-overview.svg": "image/svg+xml; charset=utf-8",
+    "console-overview.svg": "image/svg+xml; charset=utf-8",
 }
 
 
@@ -2132,6 +2138,246 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
+
+    def _serve_help_asset(self, parsed_path):
+        prefix = "/help/assets/"
+        asset_name = parsed_path[len(prefix) :]
+        if not asset_name or "/" in asset_name or asset_name.startswith("."):
+            self._json(HTTPStatus.NOT_FOUND, {"error": "asset not found"})
+            return
+        content_type = HELP_STATIC_FILES.get(asset_name)
+        if content_type is None:
+            self._json(HTTPStatus.NOT_FOUND, {"error": "asset not found"})
+            return
+        asset_path = HELP_STATIC_ROOT / asset_name
+        try:
+            payload = asset_path.read_bytes()
+        except FileNotFoundError:
+            self._json(HTTPStatus.NOT_FOUND, {"error": "asset missing on server"})
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "public, max-age=86400, immutable")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _help_page(self):
+        html = """<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenClaw 使用说明</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f8fafc;
+        --card: #ffffff;
+        --line: #dbe3ef;
+        --text: #0f172a;
+        --muted: #475569;
+        --blue: #2563eb;
+        --blue-soft: #dbeafe;
+        --green-soft: #dcfce7;
+      }
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body {
+        margin: 0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        color: var(--text);
+        background: linear-gradient(180deg, #eff6ff 0%, var(--bg) 220px);
+      }
+      .topbar {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 22px;
+        background: rgba(255, 255, 255, 0.94);
+        border-bottom: 1px solid var(--line);
+        backdrop-filter: blur(8px);
+      }
+      .brand { font-size: 18px; font-weight: 700; }
+      .nav { display: flex; flex-wrap: wrap; gap: 10px; }
+      .nav a, .nav button {
+        border: 1px solid var(--line);
+        background: white;
+        color: var(--text);
+        text-decoration: none;
+        border-radius: 999px;
+        padding: 10px 16px;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .nav button.primary { background: var(--blue); color: white; border-color: var(--blue); }
+      .shell { width: min(1120px, calc(100vw - 32px)); margin: 0 auto; padding: 28px 0 56px; }
+      .hero, .section, .tip {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+      }
+      .hero { padding: 28px; }
+      .hero h1 { margin: 0 0 12px; font-size: 34px; }
+      .hero p { margin: 0; line-height: 1.7; color: var(--muted); font-size: 17px; }
+      .hero .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        background: var(--blue-soft);
+        color: #1d4ed8;
+        padding: 10px 14px;
+        border-radius: 999px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .grid { display: grid; gap: 18px; margin-top: 18px; }
+      .grid.two { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+      .section { padding: 24px; }
+      .section h2 { margin: 0 0 14px; font-size: 24px; }
+      .section h3 { margin: 0 0 8px; font-size: 18px; }
+      .section p, .section li { color: var(--muted); line-height: 1.7; }
+      .steps { padding-left: 20px; margin: 0; }
+      .commands {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 12px;
+        margin-top: 16px;
+      }
+      .command {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 14px;
+        background: #f8fafc;
+      }
+      .command code {
+        display: inline-block;
+        font-size: 16px;
+        font-weight: 700;
+        color: #1d4ed8;
+        background: transparent;
+      }
+      figure {
+        margin: 0;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        overflow: hidden;
+        background: #fff;
+      }
+      figure img { display: block; width: 100%; height: auto; }
+      figcaption { padding: 14px 16px 18px; color: var(--muted); font-size: 14px; }
+      .tip {
+        margin-top: 18px;
+        padding: 18px 20px;
+        background: var(--green-soft);
+      }
+      .tip strong { display: block; margin-bottom: 6px; }
+      @media (max-width: 720px) {
+        .hero h1 { font-size: 28px; }
+        .topbar { padding: 12px 14px; }
+        .shell { width: min(100vw - 20px, 1120px); padding-top: 18px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="topbar">
+      <div class="brand">OpenClaw 帮助页</div>
+      <div class="nav">
+        <a href="/help">帮助页</a>
+        <button class="primary" type="button" onclick="openManaged('/', 'openclaw-dashboard')">登录 Dashboard</button>
+        <button type="button" onclick="openManaged('/console', 'openclaw-console')">控制台</button>
+      </div>
+    </div>
+    <main class="shell">
+      <section class="hero">
+        <h1>OpenClaw 使用说明</h1>
+        <p>这是给第一次使用 OpenClaw 的同事准备的快速帮助页。你可以先登录进入 Dashboard，第一次初始化大约需要 2 分钟；进入聊天后，直接发送“你好”就可以开始对话。</p>
+        <div class="chips">
+          <span class="chip">1. 使用 Yinxiang SSO 登录</span>
+          <span class="chip">2. 首次初始化大约需要 2 分钟</span>
+          <span class="chip">3. 进入聊天后发送“你好”开始</span>
+        </div>
+      </section>
+      <div class="grid two">
+        <section class="section">
+          <h2>快速开始</h2>
+          <ol class="steps">
+            <li>点击上方 <strong>登录 Dashboard</strong>，使用 Yinxiang SSO 登录。</li>
+            <li>如果是第一次进入，系统会自动为你准备专属环境，请耐心等待约 2 分钟。</li>
+            <li>进入聊天界面后，先发一句“你好”，确认对话已经正常开始。</li>
+            <li>之后就可以像和同事聊天一样，直接提出问题或交代任务。</li>
+          </ol>
+          <div class="tip">
+            <strong>小提示</strong>
+            如果刚登录时看到等待页面，这是正常现象；页面会在环境准备好后自动进入系统。
+          </div>
+        </section>
+        <figure>
+          <img src="/help/assets/dashboard-overview.svg" alt="Dashboard 界面示意图" />
+          <figcaption>Dashboard 主要用于聊天、查看会话和继续追问。第一次进入后，先发送“你好”最稳妥。</figcaption>
+        </figure>
+      </div>
+      <section class="section" style="margin-top: 18px;">
+        <h2>常用命令</h2>
+        <p>下面这些命令最常用，建议先记住。它们可以直接在聊天输入框里发送，也可以在需要时让 OpenClaw 帮你解释。</p>
+        <div class="commands">
+          <div class="command"><code>/help</code><p>打开帮助菜单，查看常见入口和说明。</p></div>
+          <div class="command"><code>/models</code> / <code>/model</code><p>查看或切换当前可用模型。</p></div>
+          <div class="command"><code>/channels</code><p>查看和管理企微、Telegram 等 IM 渠道。</p></div>
+          <div class="command"><code>/status</code><p>查看当前环境、Gateway 和浏览器等状态。</p></div>
+          <div class="command"><code>/thinking</code><p>查看或调整思考模式相关设置。</p></div>
+          <div class="command"><code>/reasoning</code><p>查看或调整推理模式相关设置。</p></div>
+          <div class="command"><code>/skill</code><p>查看可用技能，或让系统按技能方式完成任务。</p></div>
+        </div>
+      </section>
+      <div class="grid two">
+        <figure>
+          <img src="/help/assets/console-overview.svg" alt="控制台界面示意图" />
+          <figcaption>控制台适合查看状态、执行命令和排查问题；如果你不熟悉命令行，也可以先让 OpenClaw 告诉你要执行什么。</figcaption>
+        </figure>
+        <section class="section">
+          <h2>控制台是做什么的？</h2>
+          <p><strong>控制台（/console）</strong> 是你的专属终端窗口。适合做这些事情：</p>
+          <ul class="steps">
+            <li>查看当前系统状态，例如 `openclaw status`。</li>
+            <li>执行简单命令，检查文件、日志或网络状态。</li>
+            <li>在 OpenClaw 提示你需要进一步排查时，配合它一起处理问题。</li>
+          </ul>
+          <div class="tip">
+            <strong>如果你不熟悉命令行也没关系</strong>
+            可以直接在聊天里描述问题，让 OpenClaw 告诉你下一步该做什么。
+          </div>
+        </section>
+      </div>
+      <section class="section" style="margin-top: 18px;">
+        <h2>配置企微、Telegram 等 IM</h2>
+        <p>如果你希望通过企微、Telegram 等 IM 和 OpenClaw 对话，可以先在聊天中使用 <code>/channels</code> 查看当前渠道状态，再按提示完成配置。</p>
+        <ul class="steps">
+          <li>企微：适合公司内部使用，配置完成后可直接在企微里发消息给 OpenClaw。</li>
+          <li>Telegram：适合个人或跨设备使用，配置完成后可通过机器人聊天。</li>
+          <li>其他 IM：也可以在 <code>/channels</code> 里查看是否已启用，以及是否还需要补充配置。</li>
+        </ul>
+      </section>
+    </main>
+    <script>
+      function openManaged(url, targetName) {
+        const nextWindow = window.open(url, targetName);
+        if (nextWindow && typeof nextWindow.focus === 'function') {
+          nextWindow.focus();
+          return;
+        }
+        window.location.assign(url);
+      }
+    </script>
+  </body>
+</html>"""
+        self._html(HTTPStatus.OK, html)
 
     def _console_page(self):
         html = """<!doctype html>
@@ -2655,6 +2901,14 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/health":
             self._json(HTTPStatus.OK, {"status": "ok"})
+            return
+
+        if parsed.path.startswith("/help/assets/"):
+            self._serve_help_asset(parsed.path)
+            return
+
+        if parsed.path in ("/help", "/help/"):
+            self._help_page()
             return
 
         if parsed.path.startswith("/console/assets/"):

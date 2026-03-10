@@ -1,5 +1,12 @@
 http:
   routers:
+    openclaw-help:
+      rule: "(Host(`claw.hatch.yinxiang.com`) || Host(`openclaw.company.internal`)) && PathPrefix(`/help`)"
+      entryPoints:
+        - web
+      priority: 100
+      service: instance-manager
+
     openclaw:
       # Keep these hosts in sync with OPENCLAW_HOST in infra/.env.
       rule: "(Host(`claw.hatch.yinxiang.com`) || Host(`openclaw.company.internal`)) && PathPrefix(`/`)"
@@ -8,6 +15,11 @@ http:
       service: oauth2-proxy
 
   services:
+    instance-manager:
+      loadBalancer:
+        servers:
+          - url: "http://instance-manager:8080"
+
     oauth2-proxy:
       loadBalancer:
         servers:

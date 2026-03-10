@@ -1,4 +1,5 @@
 import os
+from http import HTTPStatus
 from pathlib import Path
 import struct
 import tempfile
@@ -9,6 +10,7 @@ import json
 import services_instance_manager.main as instance_manager_main
 from services_instance_manager.main import (
     CONSOLE_STATIC_ROOT,
+    HELP_STATIC_ROOT,
     DockerAPIError,
     Handler,
     _build_default_startup_cmd,
@@ -53,6 +55,60 @@ class JITProvisionTests(unittest.TestCase):
         self.assertTrue((CONSOLE_STATIC_ROOT / "xterm.js").is_file())
         self.assertTrue((CONSOLE_STATIC_ROOT / "xterm.css").is_file())
         self.assertTrue((CONSOLE_STATIC_ROOT / "xterm-addon-fit.js").is_file())
+
+    def test_help_static_assets_exist(self):
+        self.assertTrue((HELP_STATIC_ROOT / "dashboard-overview.svg").is_file())
+        self.assertTrue((HELP_STATIC_ROOT / "console-overview.svg").is_file())
+
+    def test_help_page_contains_navigation_and_guidance(self):
+        captured = {}
+        handler = Handler.__new__(Handler)
+
+        def capture_html(status, body):
+            captured["status"] = status
+            captured["body"] = body
+
+        handler._html = capture_html
+        handler._help_page()
+
+        self.assertEqual(captured["status"], HTTPStatus.OK)
+        self.assertIn("OpenClaw 使用说明", captured["body"])
+        self.assertIn("登录 Dashboard", captured["body"])
+        self.assertIn("控制台", captured["body"])
+        self.assertIn("首次初始化大约需要 2 分钟", captured["body"])
+        self.assertIn("/models", captured["body"])
+        self.assertIn("/channels", captured["body"])
+        self.assertIn("企微", captured["body"])
+        self.assertIn("window.open", captured["body"])
+
+    def test_do_get_routes_help_page(self):
+        handler = Handler.__new__(Handler)
+        handler.path = "/help"
+        called = []
+        handler._help_page = lambda: called.append("help")
+        handler._serve_help_asset = lambda _path: called.append("asset")
+        handler._json = lambda status, payload: called.append((status, payload))
+
+        handler.do_GET()
+
+        self.assertEqual(called, ["help"])
+
+    def test_do_get_routes_help_asset(self):
+        handler = Handler.__new__(Handler)
+        handler.path = "/help/assets/dashboard-overview.svg"
+        called = []
+        handler._help_page = lambda: called.append("help")
+        handler._serve_help_asset = lambda asset_path: called.append(asset_path)
+        handler._json = lambda status, payload: called.append((status, payload))
+
+        handler.do_GET()
+
+        self.assertEqual(called, ["/help/assets/dashboard-overview.svg"])
+
+    def test_traefik_routes_help_directly_to_instance_manager(self):
+        config = Path("/home/fyue/git/clawpool/infra/traefik/dynamic.yml").read_text(encoding="utf-8")
+        self.assertIn("PathPrefix(`/help`)", config)
+        self.assertIn("service: instance-manager", config)
 
     def test_split_csv_values(self):
         self.assertEqual(split_csv_values("a,b, c"), ["a", "b", "c"])
