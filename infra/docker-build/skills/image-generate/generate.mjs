@@ -90,6 +90,7 @@ function pickString(node, keys) {
 function pickImageUrl(node) {
   return pickString(node, [
     'url',
+    'image',
     'image_url',
     'imageUrl',
     'output_image_url',
@@ -104,7 +105,6 @@ function pickImageBase64(node) {
     'image_base64',
     'imageBase64',
     'base64',
-    'image',
     'data',
   ]);
 }

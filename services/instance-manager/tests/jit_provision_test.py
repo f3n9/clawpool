@@ -1287,6 +1287,14 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("input:", script)
         self.assertIn("voice:", script)
 
+    def test_bundled_image_script_treats_image_field_as_url_not_base64(self):
+        script = Path("/home/fyue/git/clawpool/infra/docker-build/skills/image-generate/generate.mjs").read_text(encoding="utf-8")
+        self.assertIn("'image'", script)
+        image_url_section = script.split("function pickImageUrl(node) {", 1)[1].split("function pickImageBase64(node) {", 1)[0]
+        image_base64_section = script.split("function pickImageBase64(node) {", 1)[1].split("function pickMimeType(node) {", 1)[0]
+        self.assertIn("'image'", image_url_section)
+        self.assertNotIn("'image'", image_base64_section)
+
     def test_dockerfile_bundles_speech_skills(self):
         dockerfile = Path("/home/fyue/git/clawpool/infra/docker-build/Dockerfile").read_text(encoding="utf-8")
         self.assertIn("/app/skills", dockerfile)
