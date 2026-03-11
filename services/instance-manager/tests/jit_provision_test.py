@@ -576,8 +576,12 @@ class JITProvisionTests(unittest.TestCase):
                 "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
                 "OPENCLAW_IMAGE_TAG": "1.0.0",
                 "OPENCLAW_DASHSCOPE_API_KEY": "dashscope-shared",
+                "OPENCLAW_DASHSCOPE_IMAGE_API_KEY": "dashscope-image",
                 "OPENCLAW_DASHSCOPE_ASR_BASE_URL": "https://dashscope.example/asr",
                 "OPENCLAW_DASHSCOPE_TTS_BASE_URL": "https://dashscope.example/tts",
+                "OPENCLAW_DASHSCOPE_IMAGE_BASE_URL": "https://dashscope.example/image",
+                "OPENCLAW_DASHSCOPE_IMAGE_MODEL": "qwen-image-2.0",
+                "OPENCLAW_IMAGE_OUTPUT_DIR": "/workspace/images",
             },
             clear=False,
         ), patch(
@@ -598,8 +602,12 @@ class JITProvisionTests(unittest.TestCase):
             )
         env_entries = spec.get("Env", [])
         self.assertIn("OPENCLAW_DASHSCOPE_API_KEY=dashscope-shared", env_entries)
+        self.assertIn("OPENCLAW_DASHSCOPE_IMAGE_API_KEY=dashscope-image", env_entries)
         self.assertIn("OPENCLAW_DASHSCOPE_ASR_BASE_URL=https://dashscope.example/asr", env_entries)
         self.assertIn("OPENCLAW_DASHSCOPE_TTS_BASE_URL=https://dashscope.example/tts", env_entries)
+        self.assertIn("OPENCLAW_DASHSCOPE_IMAGE_BASE_URL=https://dashscope.example/image", env_entries)
+        self.assertIn("OPENCLAW_DASHSCOPE_IMAGE_MODEL=qwen-image-2.0", env_entries)
+        self.assertIn("OPENCLAW_IMAGE_OUTPUT_DIR=/workspace/images", env_entries)
 
     def test_repairs_legacy_trusted_proxy_config(self):
         docker = FakeDocker()
@@ -1151,10 +1159,13 @@ class JITProvisionTests(unittest.TestCase):
         root = Path("/home/fyue/git/clawpool/infra/docker-build/skills")
         asr_skill = root / "asr-transcribe"
         tts_skill = root / "tts-synthesize"
+        image_skill = root / "image-generate"
         self.assertTrue((asr_skill / "SKILL.md").exists())
         self.assertTrue((tts_skill / "SKILL.md").exists())
+        self.assertTrue((image_skill / "SKILL.md").exists())
         self.assertTrue((asr_skill / "transcribe.mjs").exists())
         self.assertTrue((tts_skill / "synthesize.mjs").exists())
+        self.assertTrue((image_skill / "generate.mjs").exists())
         self.assertIn("qwen3-asr-flash", (asr_skill / "SKILL.md").read_text(encoding="utf-8"))
         self.assertIn("qwen3-asr-flash", (asr_skill / "transcribe.mjs").read_text(encoding="utf-8"))
         self.assertIn("OPENCLAW_DASHSCOPE_ASR_API_KEY", (asr_skill / "transcribe.mjs").read_text(encoding="utf-8"))
@@ -1162,6 +1173,14 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("qwen3-tts-flash", (tts_skill / "SKILL.md").read_text(encoding="utf-8"))
         self.assertIn("qwen3-tts-flash", (tts_skill / "synthesize.mjs").read_text(encoding="utf-8"))
         self.assertIn("OPENCLAW_DASHSCOPE_TTS_API_KEY", (tts_skill / "synthesize.mjs").read_text(encoding="utf-8"))
+        self.assertIn("qwen-image-2.0", (image_skill / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("qwen-image-2.0", (image_skill / "generate.mjs").read_text(encoding="utf-8"))
+        self.assertIn("OPENCLAW_DASHSCOPE_IMAGE_API_KEY", (image_skill / "generate.mjs").read_text(encoding="utf-8"))
+        self.assertNotIn("abcd-1234", (image_skill / "generate.mjs").read_text(encoding="utf-8"))
+        self.assertIn("messages", (image_skill / "generate.mjs").read_text(encoding="utf-8"))
+        self.assertIn("explicitly asks", (image_skill / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn(".openclaw/workspace/data/images", (image_skill / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("attach", (image_skill / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_bundled_asr_script_uses_compatible_audio_input_shapes(self):
         script = Path("/home/fyue/git/clawpool/infra/docker-build/skills/asr-transcribe/transcribe.mjs").read_text(encoding="utf-8")

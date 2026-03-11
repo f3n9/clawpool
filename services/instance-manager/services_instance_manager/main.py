@@ -1817,12 +1817,16 @@ def _build_container_spec(identity, artifacts):
         "OPENCLAW_DASHSCOPE_API_KEY",
         "OPENCLAW_DASHSCOPE_ASR_API_KEY",
         "OPENCLAW_DASHSCOPE_TTS_API_KEY",
+        "OPENCLAW_DASHSCOPE_IMAGE_API_KEY",
         "OPENCLAW_DASHSCOPE_ASR_BASE_URL",
         "OPENCLAW_DASHSCOPE_TTS_BASE_URL",
+        "OPENCLAW_DASHSCOPE_IMAGE_BASE_URL",
         "OPENCLAW_DASHSCOPE_ASR_MODEL",
         "OPENCLAW_DASHSCOPE_TTS_MODEL",
+        "OPENCLAW_DASHSCOPE_IMAGE_MODEL",
         "OPENCLAW_DASHSCOPE_TTS_VOICE",
         "OPENCLAW_AUDIO_OUTPUT_DIR",
+        "OPENCLAW_IMAGE_OUTPUT_DIR",
     ):
         passthrough_value = os.getenv(passthrough_name, "").strip()
         if passthrough_value:

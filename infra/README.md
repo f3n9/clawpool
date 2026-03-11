@@ -32,6 +32,10 @@ This directory contains base deployment assets for enterprise OpenClaw.
 - `OPENCLAW_DEFAULT_OPENAI_ENDPOINT`
 - `OPENCLAW_DASHSCOPE_COMPAT_ENDPOINT` (optional override for the DashScope-compatible provider endpoint)
 - `OPENCLAW_DASHSCOPE_API_KEY` (required to enable the DashScope-compatible provider and MiniMax default)
+- `OPENCLAW_DASHSCOPE_IMAGE_API_KEY` (optional image-generation override; falls back to `OPENCLAW_DASHSCOPE_API_KEY`)
+- `OPENCLAW_DASHSCOPE_IMAGE_BASE_URL` (optional override for the bundled image-generation skill endpoint)
+- `OPENCLAW_DASHSCOPE_IMAGE_MODEL` (optional override for the bundled image-generation skill model; defaults to `qwen-image-2.0`)
+- `OPENCLAW_IMAGE_OUTPUT_DIR` (optional override for bundled image skill output; defaults to `~/.openclaw/workspace/data/images`)
 - `OPENCLAW_OPENAI_API` (optional override: `openai-responses` or `openai-completions`)
 - `OPENCLAW_ALLOWED_MODELS` (optional approved-model override; provider-prefixed refs such as `dashscope/MiniMax-M2.5` are supported)
 - `OPENCLAW_DEFAULT_OPENAI_MODEL` (optional explicit default; when omitted and `OPENCLAW_DASHSCOPE_API_KEY` is set, defaults to `dashscope/MiniMax-M2.5`)
