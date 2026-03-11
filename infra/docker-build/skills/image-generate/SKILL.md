@@ -25,11 +25,11 @@ Do not use this skill for ordinary text replies or for image analysis.
 1. Confirm the exact image prompt if the request is underspecified.
 2. Run:
    - `node generate.mjs --prompt "a watercolor mountain village at sunrise" --json`
-3. Read `outputPath` from the JSON result.
+3. Read `downloadUrl` from the JSON result when it is present. Only fall back to `downloadPath` or `outputPath` if `downloadUrl` is empty.
 4. If the current channel supports image attachments, attach the saved image in the reply.
-5. If attachment sending is unavailable, return the saved local path and, when your deployment exposes workspace files over `/files/`, include the `downloadPath`.
+5. If attachment sending is unavailable, prefer returning the public download URL such as `https://claw.hatch.yinxiang.com/files/data/images/example.png`. Only return the saved local path when no public `/files/...` URL can be constructed.
 
 ## Notes
 - Keep this skill opt-in only; use it only when the user explicitly asks for image generation.
 - The helper saves files into persistent workspace-backed storage so they survive container restarts.
-- Keep the reply focused on the generated image and the final saved path.
+- Keep the reply focused on the generated image and the download URL.

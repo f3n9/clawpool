@@ -1853,6 +1853,8 @@ def _build_container_spec(identity, artifacts):
         env.append(f"OPENCLAW_GATEWAY_AUTH_TOKEN={gateway_token}")
 
     for passthrough_name in (
+        "OPENCLAW_HOST",
+        "OPENCLAW_CONTROL_UI_ORIGIN",
         "OPENCLAW_DASHSCOPE_API_KEY",
         "OPENCLAW_DASHSCOPE_ASR_API_KEY",
         "OPENCLAW_DASHSCOPE_TTS_API_KEY",

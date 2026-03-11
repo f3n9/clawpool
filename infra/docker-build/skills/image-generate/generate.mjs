@@ -6,6 +6,7 @@ import process from 'node:process';
 const DEFAULT_BASE_URL = 'https://dashscope-yxai.hatch.yinxiang.com/api/v1/services/aigc/multimodal-generation/generation';
 const DEFAULT_MODEL = 'qwen-image-2.0';
 const DEFAULT_EXTENSION = 'png';
+const DEFAULT_PUBLIC_ORIGIN = 'https://claw.hatch.yinxiang.com';
 
 function parseArgs(argv) {
   const out = { prompt: '', output: '', json: false };
@@ -133,6 +134,42 @@ function buildDownloadPath(relativePath) {
   return `/files/${relativePath}`;
 }
 
+function readConfigOrigin() {
+  const configPath = path.join(process.env.HOME || '/home/node', '.openclaw', 'openclaw.json');
+  try {
+    const payload = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const allowedOrigins = payload?.gateway?.controlUi?.allowedOrigins;
+    if (!Array.isArray(allowedOrigins)) {
+      return '';
+    }
+    const origin = allowedOrigins.find((value) => typeof value === 'string' && value.trim());
+    return origin ? origin.trim().replace(/\/+$/, '') : '';
+  } catch {
+    return '';
+  }
+}
+
+function resolvePublicOrigin() {
+  const explicitOrigin = (process.env.OPENCLAW_CONTROL_UI_ORIGIN || '').trim();
+  if (explicitOrigin) {
+    return explicitOrigin.replace(/\/+$/, '');
+  }
+  const host = (process.env.OPENCLAW_HOST || '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+  if (!host) {
+    return readConfigOrigin() || DEFAULT_PUBLIC_ORIGIN;
+  }
+  return `https://${host}`;
+}
+
+function buildDownloadUrl(relativePath) {
+  const downloadPath = buildDownloadPath(relativePath);
+  const origin = resolvePublicOrigin();
+  if (!downloadPath || !origin) {
+    return '';
+  }
+  return `${origin}${downloadPath}`;
+}
+
 function stripDataUrlPrefix(value) {
   const trimmed = String(value || '').trim();
   const match = trimmed.match(/^data:([^;,]+)?;base64,(.+)$/i);
@@ -228,6 +265,7 @@ async function main() {
     outputPath: written.outputPath,
     relativePath,
     downloadPath: buildDownloadPath(relativePath),
+    downloadUrl: buildDownloadUrl(relativePath),
     source: written.source,
     url: written.url || '',
   };

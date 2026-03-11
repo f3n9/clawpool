@@ -658,6 +658,8 @@ class JITProvisionTests(unittest.TestCase):
             {
                 "OPENCLAW_IMAGE": "ghcr.io/example/openclaw",
                 "OPENCLAW_IMAGE_TAG": "1.0.0",
+                "OPENCLAW_HOST": "claw.hatch.yinxiang.com",
+                "OPENCLAW_CONTROL_UI_ORIGIN": "https://claw.hatch.yinxiang.com",
                 "OPENCLAW_DASHSCOPE_API_KEY": "dashscope-shared",
                 "OPENCLAW_DASHSCOPE_IMAGE_API_KEY": "dashscope-image",
                 "OPENCLAW_DASHSCOPE_ASR_BASE_URL": "https://dashscope.example/asr",
@@ -685,6 +687,8 @@ class JITProvisionTests(unittest.TestCase):
             )
         env_entries = spec.get("Env", [])
         self.assertIn("OPENCLAW_DASHSCOPE_API_KEY=dashscope-shared", env_entries)
+        self.assertIn("OPENCLAW_HOST=claw.hatch.yinxiang.com", env_entries)
+        self.assertIn("OPENCLAW_CONTROL_UI_ORIGIN=https://claw.hatch.yinxiang.com", env_entries)
         self.assertIn("OPENCLAW_DASHSCOPE_IMAGE_API_KEY=dashscope-image", env_entries)
         self.assertIn("OPENCLAW_DASHSCOPE_ASR_BASE_URL=https://dashscope.example/asr", env_entries)
         self.assertIn("OPENCLAW_DASHSCOPE_TTS_BASE_URL=https://dashscope.example/tts", env_entries)
@@ -1259,11 +1263,17 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("qwen-image-2.0", (image_skill / "SKILL.md").read_text(encoding="utf-8"))
         self.assertIn("qwen-image-2.0", (image_skill / "generate.mjs").read_text(encoding="utf-8"))
         self.assertIn("OPENCLAW_DASHSCOPE_IMAGE_API_KEY", (image_skill / "generate.mjs").read_text(encoding="utf-8"))
+        self.assertIn("OPENCLAW_HOST", (image_skill / "generate.mjs").read_text(encoding="utf-8"))
+        self.assertIn("openclaw.json", (image_skill / "generate.mjs").read_text(encoding="utf-8"))
+        self.assertIn("allowedOrigins", (image_skill / "generate.mjs").read_text(encoding="utf-8"))
+        self.assertIn("https://claw.hatch.yinxiang.com", (image_skill / "generate.mjs").read_text(encoding="utf-8"))
         self.assertNotIn("abcd-1234", (image_skill / "generate.mjs").read_text(encoding="utf-8"))
         self.assertIn("messages", (image_skill / "generate.mjs").read_text(encoding="utf-8"))
         self.assertIn("explicitly asks", (image_skill / "SKILL.md").read_text(encoding="utf-8"))
         self.assertIn(".openclaw/workspace/data/images", (image_skill / "SKILL.md").read_text(encoding="utf-8"))
         self.assertIn("attach", (image_skill / "SKILL.md").read_text(encoding="utf-8"))
+        self.assertIn("downloadUrl", (image_skill / "generate.mjs").read_text(encoding="utf-8"))
+        self.assertIn("https://claw.hatch.yinxiang.com/files/", (image_skill / "SKILL.md").read_text(encoding="utf-8"))
 
     def test_bundled_asr_script_uses_compatible_audio_input_shapes(self):
         script = Path("/home/fyue/git/clawpool/infra/docker-build/skills/asr-transcribe/transcribe.mjs").read_text(encoding="utf-8")
