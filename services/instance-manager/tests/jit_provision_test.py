@@ -1,4 +1,5 @@
 import os
+import io
 from http import HTTPStatus
 from pathlib import Path
 import struct
@@ -111,10 +112,92 @@ class JITProvisionTests(unittest.TestCase):
 
         self.assertEqual(called, ["/help/assets/dashboard-overview.png"])
 
+    def test_files_route_serves_authenticated_user_workspace_file(self):
+        handler = Handler.__new__(Handler)
+        handler.path = "/files/path/to/file.txt"
+        handler.command = "GET"
+        handler.headers = {"X-Forwarded-Email": "fyue@yinxiang.com"}
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.wfile = io.BytesIO()
+        sent = {"status": None, "headers": []}
+
+        handler.send_response = lambda status: sent.__setitem__("status", status)
+        handler.send_header = lambda key, value: sent["headers"].append((key, value))
+        handler.end_headers = lambda: None
+        handler._json = lambda status, payload: sent.__setitem__("json", (status, payload))
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"OPENCLAW_USERS_ROOT": tmpdir},
+            clear=False,
+        ):
+            target = Path(tmpdir) / "fyue-yinxiang.com" / "runtime" / "workspace" / "path" / "to"
+            target.mkdir(parents=True, exist_ok=True)
+            file_path = target / "file.txt"
+            file_path.write_text("hello files\n", encoding="utf-8")
+
+            handler.do_GET()
+
+        self.assertEqual(sent["status"], HTTPStatus.OK)
+        self.assertEqual(handler.wfile.getvalue(), b"hello files\n")
+        self.assertIn(("Content-Type", "text/plain; charset=utf-8"), sent["headers"])
+
+    def test_files_route_rejects_path_traversal(self):
+        handler = Handler.__new__(Handler)
+        handler.path = "/files/../../etc/passwd"
+        handler.command = "GET"
+        handler.headers = {"X-Forwarded-Email": "fyue@yinxiang.com"}
+        handler.client_address = ("127.0.0.1", 12345)
+        captured = {}
+        handler._json = lambda status, payload: captured.update({"status": status, "payload": payload})
+
+        handler.do_GET()
+
+        self.assertEqual(captured["status"], HTTPStatus.BAD_REQUEST)
+        self.assertIn("invalid file path", captured["payload"].get("error", ""))
+
+    def test_files_route_returns_not_found_for_missing_file(self):
+        handler = Handler.__new__(Handler)
+        handler.path = "/files/path/to/missing.txt"
+        handler.command = "GET"
+        handler.headers = {"X-Forwarded-Email": "fyue@yinxiang.com"}
+        handler.client_address = ("127.0.0.1", 12345)
+        captured = {}
+        handler._json = lambda status, payload: captured.update({"status": status, "payload": payload})
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {"OPENCLAW_USERS_ROOT": tmpdir},
+            clear=False,
+        ):
+            handler.do_GET()
+
+        self.assertEqual(captured["status"], HTTPStatus.NOT_FOUND)
+        self.assertIn("file not found", captured["payload"].get("error", ""))
+
+    def test_files_route_requires_identity(self):
+        handler = Handler.__new__(Handler)
+        handler.path = "/files/path/to/file.txt"
+        handler.command = "GET"
+        handler.headers = {"Accept": "application/json"}
+        handler.client_address = ("127.0.0.1", 12345)
+        captured = {}
+        handler._json = lambda status, payload: captured.update({"status": status, "payload": payload})
+
+        handler.do_GET()
+
+        self.assertEqual(captured["status"], HTTPStatus.UNAUTHORIZED)
+        self.assertIn("missing identity", captured["payload"].get("error", ""))
+
     def test_traefik_routes_help_directly_to_instance_manager(self):
         config = Path("/home/fyue/git/clawpool/infra/traefik/dynamic.yml").read_text(encoding="utf-8")
         self.assertIn("PathPrefix(`/help`)", config)
         self.assertIn("service: instance-manager", config)
+
+    def test_traefik_main_router_still_covers_files_via_oauth_proxy(self):
+        config = Path("/home/fyue/git/clawpool/infra/traefik/dynamic.yml").read_text(encoding="utf-8")
+        self.assertIn("PathPrefix(`/`)", config)
+        self.assertIn("service: oauth2-proxy", config)
 
     def test_split_csv_values(self):
         self.assertEqual(split_csv_values("a,b, c"), ["a", "b", "c"])

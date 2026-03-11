@@ -4,6 +4,7 @@ import hashlib
 import json
 import http.client
 import ipaddress
+import mimetypes
 import os
 from pathlib import Path
 import re
@@ -565,6 +566,44 @@ def is_identity_allowed(headers, allowed_email_domains, allowed_groups):
         group_ok = any(g in groups for g in allowed_groups)
 
     return email_ok and group_ok
+
+
+def _resolve_request_identity(headers, client_address, query=None):
+    query = query or {}
+    header_identity, header_sub = extract_identity(headers)
+    employee_id = header_identity
+    user_sub = header_sub
+    if should_allow_loopback_query_identity(client_address, header_identity, header_sub):
+        employee_id = query.get("employee_id", [None])[0] or header_identity
+        user_sub = query.get("user_sub", [None])[0] or header_sub
+    raw_identity = employee_id or user_sub
+    if not raw_identity:
+        raise ValueError("missing identity")
+    identity = normalize_identity(raw_identity)
+    allowed_domains = split_csv_values(os.getenv("OPENCLAW_ALLOWED_EMAIL_DOMAINS", ""))
+    allowed_groups = split_csv_values(os.getenv("OPENCLAW_ALLOWED_GROUPS", ""))
+    if not is_identity_allowed(headers, allowed_domains, allowed_groups):
+        raise PermissionError("identity not allowed")
+    return identity
+
+
+def _resolve_workspace_file_path(identity, relative_path, users_root):
+    raw_path = (relative_path or "").strip()
+    if not raw_path:
+        raise ValueError("invalid file path")
+    if raw_path.startswith("/"):
+        raise ValueError("invalid file path")
+    candidate = Path(raw_path)
+    if any(part in {"", ".", ".."} for part in candidate.parts):
+        raise ValueError("invalid file path")
+    workspace_root = Path(users_root) / identity / "runtime" / "workspace"
+    target_path = (workspace_root / candidate).resolve()
+    workspace_root_resolved = workspace_root.resolve()
+    try:
+        target_path.relative_to(workspace_root_resolved)
+    except ValueError as exc:
+        raise ValueError("invalid file path") from exc
+    return target_path
 
 
 def _trusted_proxy_user_header_name():
@@ -2166,6 +2205,47 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _serve_workspace_file(self, parsed_path):
+        prefix = "/files/"
+        relative_path = parsed_path[len(prefix) :] if parsed_path.startswith(prefix) else ""
+        try:
+            identity = _resolve_request_identity(self.headers, self.client_address)
+        except ValueError:
+            if self._should_use_bootstrap_wait_page(parsed_path):
+                self._bootstrap_wait_page(self.path, "Waiting for authenticated identity...")
+            else:
+                self._json(HTTPStatus.UNAUTHORIZED, {"error": "missing identity"})
+            return
+        except PermissionError:
+            self._json(HTTPStatus.FORBIDDEN, {"error": "identity not allowed"})
+            return
+
+        users_root = os.getenv("OPENCLAW_USERS_ROOT", "/srv/openclaw/users")
+        try:
+            target_path = _resolve_workspace_file_path(identity, relative_path, users_root)
+        except ValueError:
+            self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid file path"})
+            return
+
+        if not target_path.exists() or not target_path.is_file():
+            self._json(HTTPStatus.NOT_FOUND, {"error": "file not found"})
+            return
+
+        payload = target_path.read_bytes()
+        content_type, _ = mimetypes.guess_type(str(target_path))
+        if not content_type:
+            content_type = "application/octet-stream"
+        if content_type.startswith("text/") and "charset=" not in content_type.lower():
+            content_type = f"{content_type}; charset=utf-8"
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Cache-Control", "private, no-store")
+        self.send_header("Content-Disposition", f'inline; filename="{target_path.name}"')
+        self.end_headers()
+        self.wfile.write(payload)
+
     def _help_page(self):
         html = """<!doctype html>
 <html lang="zh-CN">
@@ -2932,6 +3012,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/health":
             self._json(HTTPStatus.OK, {"status": "ok"})
+            return
+
+        if parsed.path.startswith("/files/"):
+            self._serve_workspace_file(parsed.path)
             return
 
         if parsed.path.startswith("/help/assets/"):
