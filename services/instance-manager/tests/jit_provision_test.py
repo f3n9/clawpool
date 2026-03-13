@@ -1302,6 +1302,10 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("chown -R node:node /app/skills", dockerfile)
         self.assertIn("ghcr.io/openclaw/openclaw:2026.3.12-slim-amd64", dockerfile)
 
+    def test_dockerfile_installs_clawhub_globally(self):
+        dockerfile = Path("/home/fyue/git/clawpool/infra/docker-build/Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("npm install -g clawhub", dockerfile)
+
     def test_dockerfile_uses_base_entrypoint_directly(self):
         dockerfile = Path("/home/fyue/git/clawpool/infra/docker-build/Dockerfile").read_text(encoding="utf-8")
         self.assertNotIn("docker-entrypoint-with-extensions.sh", dockerfile)

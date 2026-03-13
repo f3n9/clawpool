@@ -111,6 +111,7 @@ USER root
 ENV HOME=/home/node
 ARG NPM_REGISTRY=https://registry.npmjs.org
 ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
+RUN npm install -g clawhub
 # Install the official WeCom plugin as an image-bundled built-in extension.
 RUN set -eux; \
   tmp_home="$(mktemp -d)"; \
