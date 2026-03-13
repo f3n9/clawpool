@@ -1,5 +1,5 @@
 #ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.3.2
-ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.3.8-slim-amd64
+ARG OPENCLAW_BASE_IMAGE=ghcr.io/openclaw/openclaw:2026.3.12-slim-amd64
 FROM ${OPENCLAW_BASE_IMAGE}
 
 USER root

@@ -1300,6 +1300,7 @@ class JITProvisionTests(unittest.TestCase):
         self.assertIn("/app/skills", dockerfile)
         self.assertIn("COPY skills /app/skills", dockerfile)
         self.assertIn("chown -R node:node /app/skills", dockerfile)
+        self.assertIn("ghcr.io/openclaw/openclaw:2026.3.12-slim-amd64", dockerfile)
 
     def test_dockerfile_uses_base_entrypoint_directly(self):
         dockerfile = Path("/home/fyue/git/clawpool/infra/docker-build/Dockerfile").read_text(encoding="utf-8")
